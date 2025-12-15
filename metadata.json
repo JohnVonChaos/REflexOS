@@ -1,0 +1,7 @@
+{
+  "name": "Copy of ReflexEngine Otto-matic",
+  "description": "A UI for an AI system with a Memory Crystal and multi-agent reflection cycles (Conscious, Subconscious, Arbiter) for advanced reasoning and self-synthesis.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

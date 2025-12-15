@@ -1,0 +1,5 @@
+{
+  "name": "Jellybean Human Verification",
+  "description": "A behavioral analysis verification module using a color-sorting task to detect human interaction patterns.",
+  "requestFramePermissions": []
+}
