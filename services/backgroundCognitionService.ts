@@ -98,7 +98,7 @@ ${selfNarrative || 'None'}
 `;
       }
       loggingService.log('DEBUG', 'Generating background search query from context.');
-      const systemInstruction = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toString());
+      const systemInstruction = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString());
       const queryResponse = await generateText(contextString, systemInstruction, roleSetting, providers);
 
       let query = '';

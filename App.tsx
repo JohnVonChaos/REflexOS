@@ -53,23 +53,6 @@ const ApiKeySelector: React.FC<ApiKeySelectorProps> = ({ onKeySelected }) => {
     }
   };
 
-  // Developer/test hooks for Jellybean modal
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('jellybeanTest') === '1') {
-      console.debug('[DEV] jellybeanTest param present — opening jellybean sorter');
-      setShowJellybeans(true);
-    }
-
-    (window as any).openJellybeanSorter = () => {
-      console.debug('[DEV] openJellybeanSorter called');
-      setShowJellybeans(true);
-    };
-    console.debug('[DEV] openJellybeanSorter is available on window');
-
-    return () => { if ((window as any).openJellybeanSorter) delete (window as any).openJellybeanSorter; };
-  }, []);
-
   return (
     <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
       <div className="max-w-md w-full bg-gray-800 p-8 rounded-lg shadow-2xl border border-gray-700 text-center">
@@ -119,10 +102,27 @@ function App() {
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false); // ADD THIS
   const [isSrgExplorerOpen, setIsSrgExplorerOpen] = useState(false);
-  const [showJellybeans, setShowJellybeans] = useState(false);  // ADD THIS
+  const [showJellybeans, setShowJellybeans] = useState(false);
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [diffFiles, setDiffFiles] = useState<{file1: ProjectFile, file2: ProjectFile} | null>(null);
-  
+
+  // Developer/test hooks for Jellybean modal
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('jellybeanTest') === '1') {
+      console.debug('[DEV] jellybeanTest param present — opening jellybean sorter');
+      setShowJellybeans(true);
+    }
+
+    (window as any).openJellybeanSorter = () => {
+      console.debug('[DEV] openJellybeanSorter called');
+      setShowJellybeans(true);
+    };
+    console.debug('[DEV] openJellybeanSorter is available on window');
+
+    return () => { if ((window as any).openJellybeanSorter) delete (window as any).openJellybeanSorter; };
+  }, []);
+
   // Effect for SRG initialization
   useEffect(() => {
     const initializeSrg = async () => {

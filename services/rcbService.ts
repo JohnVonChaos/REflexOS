@@ -43,7 +43,7 @@ class RcbService {
     loggingService.log('DEBUG', 'Updating RCB based on last turn.');
 
     try {
-        let prompt = CONSCIOUS_REFLECTION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toString());
+        let prompt = CONSCIOUS_REFLECTION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString());
         prompt = prompt.replace('{TURN_CONTEXT}', turnContext);
         prompt = prompt.replace('{CURRENT_RCB}', JSON.stringify(currentRcb, null, 2));
 

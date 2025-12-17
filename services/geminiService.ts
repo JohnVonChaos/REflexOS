@@ -12,12 +12,13 @@ import { loggingService } from './loggingService';
 export const BACKGROUND_COGNITION_PROMPT = `You are a proactive, context-aware research agent integrated into a larger AI's cognitive architecture. The current date is {CURRENT_DATETIME}. Your primary mission is to support the AI's current plan of action by gathering necessary information from the web.
 
 **CRITICAL INSTRUCTIONS:**
-1.  **Analyze the Plan of Action:** The AI's 'Running Context Buffer' (RCB) contains its strategic 'plan_of_action'. Review this plan to understand the AI's immediate goals.
-2.  **Identify the Next Research Step:** Determine the very next step in the plan. If that step requires factual information that can only be obtained from a web search (e.g., "Research X," "Find documentation for Y"), formulate a query for it.
-3.  **Avoid Redundancy:** Before generating a query, review the "EXISTING RESEARCH INSIGHTS" section which shows "QUERIES ALREADY RESEARCHED". Do NOT generate a query that is semantically similar or identical to any query in that list. If the information needed is already covered by existing insights, return an empty string.
-4.  **Diversify Your Queries:** If you must research a topic area that has been partially explored, ask a DIFFERENT QUESTION about it - explore a different angle, timeframe, or subtopic. Never repeat the same query or a trivially rephrased version.
-5.  **No Search Needed is a VALID Outcome:** If the next step in the plan does NOT require a web search (e.g., "Write code," "Analyze file," "Ask user for clarification"), or if the plan is empty, or if sufficient research already exists, you MUST return a query value of an empty string (""). This is a successful outcome.
-6.  **CRITICAL RESPONSE FORMAT:** You MUST respond with a single JSON object inside a markdown code block. The JSON object must have a single key, "query". The value is either the search string or an empty string.
+1.  **DEFAULT TO SEARCHING:** Your job is to SEARCH. When in doubt, formulate a query. Only skip searching if you have VERY STRONG evidence that a search is unnecessary.
+2.  **Analyze the Plan of Action:** The AI's 'Running Context Buffer' (RCB) contains its strategic 'plan_of_action'. Review this plan to understand the AI's immediate goals.
+3.  **Identify the Next Research Step:** Determine what information would help the AI execute its plan. This includes factual lookups, current events, documentation, technical details, best practices, or any knowledge that benefits from external verification.
+4.  **Avoid ONLY Exact Duplicates:** Before generating a query, review the "EXISTING RESEARCH INSIGHTS" section which shows "QUERIES ALREADY RESEARCHED". Do NOT repeat the EXACT SAME query. However, researching RELATED topics from different angles is ENCOURAGED.
+5.  **Diversify Your Queries:** If researching a partially-explored topic, ask from a DIFFERENT angle, timeframe, or subtopic. Depth is valuable - don't avoid a topic just because it's been touched.
+6.  **ONLY Skip Search If:** (a) The plan explicitly says "no research needed", or (b) The EXACT query was already run recently (within last 5 queries), or (c) The plan is completely empty. Otherwise, GENERATE A QUERY.
+7.  **CRITICAL RESPONSE FORMAT:** You MUST respond with a single JSON object inside a markdown code block. The JSON object must have a single key, "query". The value is either the search string or an empty string.
 
 Example (search needed):
 \`\`\`json
@@ -339,37 +340,45 @@ export const performWebSearch = async (query: string, roleSetting: RoleSetting, 
 
         return { text: insightText, sources };
 
-    } 
-    else if (providers.lmstudio.webSearchApiUrl) {
-        const providerSettings = providers.lmstudio;
-        const searchEndpoint = `${providerSettings.webSearchApiUrl.replace(/\/+$/, '')}/websearch`;
-        try {
-            const response = await fetch(searchEndpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query }),
-            });
+    }
+    else {
+        // Check if current provider has webSearchApiUrl configured
+        const providerSettings = providers[provider];
+        if (providerSettings.webSearchApiUrl) {
+            const searchEndpoint = `${providerSettings.webSearchApiUrl.replace(/\/+$/, '')}/websearch`;
+            try {
+                const response = await fetch(searchEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query }),
+                });
 
-            if (!response.ok) {
-                throw new Error(`Search endpoint error: ${response.status} ${response.statusText}`);
+                if (!response.ok) {
+                    throw new Error(`Search endpoint error: ${response.status} ${response.statusText}`);
+                }
+
+                const result: WebSearchResult = await response.json();
+                loggingService.log('INFO', `Web search successful via ${provider} custom endpoint`, { query, sources: result.sources.length });
+                return result;
+
+            } catch (e: any) {
+                const errorText = `An error occurred while contacting the web search endpoint (${searchEndpoint}): ${e.message}. Make sure your local search server is running and exposes a POST /websearch endpoint.`;
+                loggingService.log('ERROR', `Error calling ${provider} web search endpoint`, { error: e.toString() });
+                return { text: errorText, sources: [] };
             }
-            
-            const result: WebSearchResult = await response.json();
-            return result;
-
-        } catch (e: any) {
-            const errorText = `An error occurred while contacting the web search endpoint (${searchEndpoint}): ${e.message}. Make sure your local search server is running and exposes a POST /websearch endpoint.`;
-            loggingService.log('ERROR', `Error calling LM Studio web search endpoint`, { error: e.toString() });
+        }
+        // If no webSearchApiUrl, inform about built-in search for certain providers
+        else if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
+            const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
+            const errorText = `Explicit web search is not supported for the ${providerName} provider in this application. However, some models (e.g., Perplexity's 'online' models or Grok) have built-in web access. AI-driven search queries for this provider will be ignored.`;
+            loggingService.log('WARN', errorText);
             return { text: errorText, sources: [] };
         }
-    } else if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
-        const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
-        const errorText = `Explicit web search is not supported for the ${providerName} provider in this application. However, some models (e.g., Perplexity's 'online' models or Grok) have built-in web access. AI-driven search queries for this provider will be ignored.`;
-        loggingService.log('WARN', errorText);
-        return { text: errorText, sources: [] };
+        else {
+            loggingService.log('WARN', `No web search configured for provider: ${provider}`);
+            return null;
+        }
     }
-    
-    return null;
 };
 
 export const validateApiKey = async (): Promise<boolean> => {
@@ -399,7 +408,7 @@ export const integrateNarrative = async (currentNarrative: string, newAxioms: st
     
     let prompt = NARRATIVE_INTEGRATION_PROMPT.replace('{CURRENT_NARRATIVE}', currentNarrative || 'This is the beginning of my story.');
     prompt = prompt.replace('{NEW_AXIOMS}', newAxioms.join('\n'));
-    prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toString());
+    prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toISOString());
     
     if (!roleSetting.selectedModel) {
         loggingService.log('WARN', 'integrateNarrative called with no model.');

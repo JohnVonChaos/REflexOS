@@ -139,7 +139,7 @@ class ContextService {
     prompt = prompt.replace('{NEW_ARTIFACTS}', newArtifactsString || 'None.');
     prompt = prompt.replace('{EXPIRING_ARTIFACTS}', expiringArtifactsString || 'None.');
     prompt = prompt.replace('{STABLE_ARTIFACTS}', stableArtifactsString || 'None.');
-    prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toString());
+    prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toISOString());
     
     try {
         const responseJson = await generateText(prompt, '', roleSetting, providers);
