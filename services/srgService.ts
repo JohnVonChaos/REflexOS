@@ -36,19 +36,11 @@ class SRGService {
         this.graph = storedGraph;
         this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
 
-        // Restore hybrid corpus if present
-        if (storedGraph.hybridCorpus && storedGraph.hybridCorpus.length > 0) {
-          console.log(`[SRG] Restoring ${storedGraph.hybridCorpus.length} tokens to hybrid corpus`);
-          (this.hybrid as any).corpus = storedGraph.hybridCorpus;
-
-          // Restore knowledge modules manifest
-          if (storedGraph.knowledgeModules && storedGraph.knowledgeModules.length > 0) {
-            this.knowledgeModules = storedGraph.knowledgeModules;
-            console.log(`[SRG] Restored ${storedGraph.knowledgeModules.length} knowledge modules`);
-            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens + ${storedGraph.knowledgeModules.length} knowledge modules from memory crystal.`);
-          } else {
-            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens from memory crystal.`);
-          }
+        // Restore knowledge modules manifest (corpus not saved to IDB)
+        if (storedGraph.knowledgeModules && storedGraph.knowledgeModules.length > 0) {
+          this.knowledgeModules = storedGraph.knowledgeModules;
+          console.log(`[SRG] Restored ${storedGraph.knowledgeModules.length} knowledge modules (corpus will be empty until session import)`);
+          onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.knowledgeModules.length} knowledge modules from memory crystal. NOTE: Corpus not persisted to IndexedDB - use session import to restore loaded books.`);
         } else {
           onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
         }
@@ -130,15 +122,17 @@ class SRGService {
 
   private async saveGraphImmediate() {
     try {
-      // Include hybrid corpus and knowledge modules in the saved state
+      // DON'T save corpus to IndexedDB - too large, causes stack overflow
+      // Corpus only persists in session JSON exports
       const stateToSave: GraphState = {
         nodes: this.graph.nodes,
         links: this.graph.links,
-        hybridCorpus: (this.hybrid as any).corpus || [],
+        // hybridCorpus: NOT SAVED TO IDB (too large)
         knowledgeModules: this.knowledgeModules
       };
       await set(DB_KEY, stateToSave);
-      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${stateToSave.hybridCorpus.length} corpus tokens, ${this.knowledgeModules.length} knowledge modules`);
+      const corpusSize = (this.hybrid as any).corpus?.length || 0;
+      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${this.knowledgeModules.length} knowledge modules (corpus: ${corpusSize} tokens, not persisted to IDB)`);
     } catch (error) {
       console.error('[SRG] Failed to save graph:', error);
     }
