@@ -357,6 +357,7 @@ function App() {
           onShowInsights={() => setIsInsightsViewerOpen(true)}
           onShowLogs={() => setIsLogViewerOpen(true)}
           onShowSrgExplorer={() => { setSrgHighlightIds([]); setIsSrgExplorerOpen(true); }}
+          onShowKnowledgeModules={() => setIsKnowledgeModulesOpen(true)}
           onShowImportHistory={() => setIsImportHistoryOpen(true)}  // ADD THIS LINE
           onToggleMessageContext={chat.toggleMessageContext}
           onToggleGeneratedFileContext={chat.toggleGeneratedFileContext}

@@ -26,6 +26,7 @@ interface SidebarProps {
   onShowInsights: () => void;
   onShowLogs: () => void;
   onShowSrgExplorer: () => void;
+  onShowKnowledgeModules: () => void;
   onShowImportHistory?: () => void;
   onToggleMessageContext: (uuid: string) => void;
   onToggleGeneratedFileContext: (fileName: string) => void;
@@ -157,6 +158,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onShowInsights,
     onShowLogs,
     onShowSrgExplorer,
+    onShowKnowledgeModules,
     onShowImportHistory,
     onToggleMessageContext,
     onToggleGeneratedFileContext,
@@ -220,6 +222,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <h1 className="text-lg font-bold">Reflex Engine</h1>
                 <div className="flex items-center gap-2">
                     <button
+                        onClick={onShowKnowledgeModules}
+                        title="Knowledge Modules"
+                        className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                    >
+                        <BookIcon />
+                    </button>
+                    <button
                         onClick={onShowSrgExplorer}
                         title="Show SRG Explorer"
                         className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
@@ -227,17 +236,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <NetworkIcon />
                     </button>
                                         {onShowImportHistory && (
-                                            <button 
-                                                onClick={onShowImportHistory} 
+                                            <button
+                                                onClick={onShowImportHistory}
                                                 title="Show Import History"
                                                 className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
                                             >
                                                 <HistoryIcon />
                                             </button>
                                         )}
-                    <button 
-                        onClick={onShowLogs} 
-                        title="Show Logs" 
+                    <button
+                        onClick={onShowLogs}
+                        title="Show Logs"
                         className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
                     >
                         <DocumentTextIcon />
