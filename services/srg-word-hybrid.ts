@@ -312,8 +312,12 @@ export class SRGWordHybrid {
       this.nodes.get(word)!.positions.push(position);
     }
 
-    // Extract relations and build edges
-    this.extractRelations(tokens, startPos);
+    // Extract relations and build edges (skip for very large texts to prevent freezing)
+    if (tokens.length < 10000) {
+      this.extractRelations(tokens, startPos);
+    } else {
+      console.log(`[Hybrid] Skipping relation extraction for large text (${tokens.length} tokens)`);
+    }
 
     // Build syntactic edges (sequential)
     for (let i = 0; i < tokens.length - 1; i++) {

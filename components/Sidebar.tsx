@@ -26,7 +26,6 @@ interface SidebarProps {
   onShowInsights: () => void;
   onShowLogs: () => void;
   onShowSrgExplorer: () => void;
-  onShowKnowledgeModules: () => void;
   onShowImportHistory?: () => void;
   onToggleMessageContext: (uuid: string) => void;
   onToggleGeneratedFileContext: (fileName: string) => void;
@@ -158,7 +157,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onShowInsights,
     onShowLogs,
     onShowSrgExplorer,
-    onShowKnowledgeModules,
     onShowImportHistory,
     onToggleMessageContext,
     onToggleGeneratedFileContext,
@@ -293,9 +291,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="border-b border-gray-700/50 p-2">
                     <h3 className="p-1 text-sm font-semibold text-gray-300">Cognitive Artifacts</h3>
                     <div className="space-y-2 p-1">
-                        <button onClick={onShowKnowledgeModules} className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">
-                            <BookIcon /> Knowledge Modules
-                        </button>
                         <button onClick={onShowAxioms} className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">
                             <BookIcon /> View Axioms ({axioms.length})
                         </button>
