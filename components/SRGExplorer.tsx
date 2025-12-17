@@ -110,7 +110,7 @@ export const SRGExplorer: React.FC<SRGExplorerProps> = ({ isOpen, onClose, highl
 
             setCorpusStats(srgService.getCorpusStats());
             const wordCount = text.split(/\s+/).length;
-            alert(`Loaded "${title}" into knowledge base!\n\n${wordCount.toLocaleString()} words added to corpus.\nCategory: ${category}\n\nIMPORTANT: Corpus persists in session exports only.\nTo save permanently, export session before closing.`);
+            alert(`Loaded "${title}" into knowledge base!\n${wordCount.toLocaleString()} words added to corpus.\nCategory: ${category}`);
         } catch (e: any) {
             console.error('[SRGExplorer] Failed to load text file:', e);
             alert(`Failed to load file: ${e.message}`);
