@@ -145,6 +145,11 @@ class BackgroundCognitionService {
         insight: finalInsight,
         sources,
         timestamp: Date.now(),
+        promptDetails: {
+          userPrompt: contextString,
+          systemPrompt: systemInstructionWithManifest,
+          stageName: 'Background Cognition (3-Layer)'
+        }
       };
 
     } catch (e) {

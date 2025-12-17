@@ -305,6 +305,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             allMessages={messages}
             allFiles={projectFiles}
             onViewTrace={onViewTrace}
+            debugMode={aiSettings.debugSRG}
           />
         ))}
         <div ref={messagesEndRef} />

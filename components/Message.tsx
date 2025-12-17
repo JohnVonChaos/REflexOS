@@ -92,6 +92,7 @@ interface MessageProps {
   onToggleContext: (uuid: string) => void;
   onToggleCollapsed: (uuid: string) => void;
   onViewTrace: (traceIds: string[]) => void;
+  debugMode?: boolean;
 }
 
 const getRoleStyles = (role: 'user' | 'model', type: MemoryAtom['type']) => {
@@ -113,7 +114,7 @@ const summarizeText = (text: string, startWords = 15, endWords = 10): string => 
     return `${start} ... ${end}`;
 };
 
-export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, onToggleContext, onToggleCollapsed, onViewTrace }) => {
+export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, onToggleContext, onToggleCollapsed, onViewTrace, debugMode }) => {
   const { bg, border, icon } = getRoleStyles(atom.role, atom.type);
   const isCognitive = atom.type === 'subconscious_reflection' || atom.type === 'conscious_thought' || atom.type === 'axiom';
   const hasInternals = (atom.cognitiveTrace && atom.cognitiveTrace.length > 0) || atom.backgroundInsight;
@@ -308,11 +309,12 @@ export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, o
                 )}
                 
                 {hasInternals && (
-                    <CognitiveTraceViewer 
-                        trace={atom.cognitiveTrace} 
+                    <CognitiveTraceViewer
+                        trace={atom.cognitiveTrace}
                         insight={atom.backgroundInsight}
                         isExpanded={isTraceExpanded}
                         setIsExpanded={setIsTraceExpanded}
+                        debugMode={debugMode}
                     />
                 )}
             </div>

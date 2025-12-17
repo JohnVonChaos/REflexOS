@@ -970,6 +970,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const workflow = aiSettingsRef.current.workflow;
             const synthesisStageIndex = workflow.findIndex(s => s.id === 'synthesis_default');
 
+            // Store synthesis prompt details for debug visibility
+            let synthesisPromptDetails: { userPrompt: string; systemPrompt: string; stageName: string } = {
+                userPrompt: 'Synthesis prompt not yet captured',
+                systemPrompt: 'Synthesis system prompt not yet captured',
+                stageName: 'Final Synthesis'
+            };
+
             // DISABLED: Pre-workflow trap-door - was truncating outputs before they could complete
             if (false) {
                 // Trap-door disabled
@@ -1037,7 +1044,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     let synthesisError: any = null;
                     let streamedText = '';
                     const MAX_RETRIES = 2;
-                    
+
+                    // Capture synthesis prompts for debug visibility
+                    synthesisPromptDetails = {
+                        userPrompt: stagePrompt,
+                        systemPrompt: stage.systemPrompt,
+                        stageName: stage.name
+                    };
+
                     for (let attempt = 0; attempt < MAX_RETRIES && !synthesisCompleted; attempt++) {
                         try {
                             const contents: Content[] = [{ role: 'user', parts: [{ text: stagePrompt }] }];
@@ -1099,7 +1113,24 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     const stageOutput = await generateText(stagePrompt, stage.systemPrompt, roleSetting, aiSettingsRef.current.providers);
                     workflowOutputs[stage.id] = stageOutput;
                     if (stage.id !== 'axiom_generation_default') { // Don't add axiom agent output to trace
-                        cognitiveTrace.push({ uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'conscious_thought', text: stageOutput, isInContext: false, isCollapsed: false, activationScore: 0, lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name } as any);
+                        cognitiveTrace.push({
+                            uuid: uuidv4(),
+                            timestamp: Date.now(),
+                            role: 'model',
+                            type: 'conscious_thought',
+                            text: stageOutput,
+                            isInContext: false,
+                            isCollapsed: false,
+                            activationScore: 0,
+                            lastActivatedAt: 0,
+                            lastActivatedTurn: 0,
+                            name: stage.name,
+                            promptDetails: {
+                                userPrompt: stagePrompt,
+                                systemPrompt: stage.systemPrompt,
+                                stageName: stage.name
+                            }
+                        } as any);
                     }
                     loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: stageOutput.substring(0, 100) + '...' });
                 }
@@ -1130,8 +1161,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             }
             const generatedFiles = [...generatedFilesFromMarkdown, ...generatedFilesFromTools];
 
-            const finalUpdatedAtom: MemoryAtom = { 
-                ...finalModelAtom!, 
+            const finalUpdatedAtom: MemoryAtom = {
+                ...finalModelAtom!,
                 text: finalResponseText,
                 generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
                 cognitiveTrace: cognitiveTrace.length > 0 ? cognitiveTrace : undefined,
@@ -1140,6 +1171,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     messages: contextMessagesForPayload.map(m => m.uuid),
                 },
                 traceIds: srgTraceIds,
+                promptDetails: synthesisPromptDetails
             };
 
             const messagesAfterGeneration = messagesRef.current.map(m => m.uuid === finalModelAtom!.uuid ? finalUpdatedAtom : m);

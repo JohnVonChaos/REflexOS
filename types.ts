@@ -53,6 +53,13 @@ export interface MemoryAtom {
   axiomId?: string;
   traceIds?: string[]; // For linking a response back to the SRG trace
 
+  // --- NEW: Full prompt visibility for debug mode ---
+  promptDetails?: {
+    userPrompt: string;      // The assembled context/inputs
+    systemPrompt: string;    // The system instruction
+    stageName?: string;      // Which cognitive stage this was
+  };
+
   // --- NEW: Gradient weight for BeatContext-aware recall ---
   gradientWeight?: number;
   
@@ -127,6 +134,11 @@ export interface BackgroundInsight {
   insight: string;
   sources: { web: { uri: string; title: string } }[];
   timestamp: number;
+  promptDetails?: {
+    userPrompt: string;
+    systemPrompt: string;
+    stageName: string;
+  };
 }
 
 export type AIProvider = 'gemini' | 'fireworks' | 'lmstudio' | 'perplexity' | 'grok';
