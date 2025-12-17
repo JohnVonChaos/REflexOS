@@ -7,16 +7,16 @@ import {
   PathData 
 } from '../types';
 
-// Visual configuration for colors including Hex for SVG usage
+// Visual configuration for colors - Lüscher Color Test standard colors
 const COLOR_CONFIG: Record<ColorId, { bg: string; border: string; label: string; hex: string }> = {
-  [ColorId.BLUE]:   { bg: 'bg-blue-500', border: 'border-blue-700', label: 'Blue', hex: '#3b82f6' },
-  [ColorId.GREEN]:  { bg: 'bg-green-500', border: 'border-green-700', label: 'Green', hex: '#22c55e' },
-  [ColorId.RED]:    { bg: 'bg-red-500', border: 'border-red-700', label: 'Red', hex: '#ef4444' },
-  [ColorId.YELLOW]: { bg: 'bg-yellow-400', border: 'border-yellow-600', label: 'Yellow', hex: '#facc15' },
-  [ColorId.VIOLET]: { bg: 'bg-violet-500', border: 'border-violet-700', label: 'Violet', hex: '#8b5cf6' },
-  [ColorId.BROWN]:  { bg: 'bg-amber-800', border: 'border-amber-950', label: 'Brown', hex: '#92400e' },
-  [ColorId.BLACK]:  { bg: 'bg-neutral-900', border: 'border-black', label: 'Black', hex: '#171717' },
-  [ColorId.GREY]:   { bg: 'bg-gray-500', border: 'border-gray-700', label: 'Grey', hex: '#6b7280' },
+  [ColorId.BLUE]:   { bg: 'bg-blue-900', border: 'border-blue-950', label: 'Blue', hex: '#1e3a8a' },
+  [ColorId.GREEN]:  { bg: 'bg-teal-600', border: 'border-teal-800', label: 'Green', hex: '#0d9488' },
+  [ColorId.RED]:    { bg: 'bg-orange-600', border: 'border-orange-700', label: 'Red', hex: '#ea580c' },
+  [ColorId.YELLOW]: { bg: 'bg-yellow-400', border: 'border-yellow-500', label: 'Yellow', hex: '#fbbf24' },
+  [ColorId.VIOLET]: { bg: 'bg-pink-600', border: 'border-pink-700', label: 'Violet', hex: '#db2777' },
+  [ColorId.BROWN]:  { bg: 'bg-orange-700', border: 'border-orange-800', label: 'Brown', hex: '#c2410c' },
+  [ColorId.BLACK]:  { bg: 'bg-slate-900', border: 'border-black', label: 'Black', hex: '#0f172a' },
+  [ColorId.GREY]:   { bg: 'bg-slate-500', border: 'border-slate-600', label: 'Grey', hex: '#64748b' },
 };
 
 interface BeanState {
