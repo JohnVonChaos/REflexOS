@@ -34,7 +34,15 @@ class SRGService {
         console.log(`[SRG] Loaded ${storedGraph.nodes.length} nodes from IDB.`);
         this.graph = storedGraph;
         this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
-        onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
+
+        // Restore hybrid corpus if present
+        if (storedGraph.hybridCorpus && storedGraph.hybridCorpus.length > 0) {
+          console.log(`[SRG] Restoring ${storedGraph.hybridCorpus.length} tokens to hybrid corpus`);
+          (this.hybrid as any).corpus = storedGraph.hybridCorpus;
+          onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens from memory crystal.`);
+        } else {
+          onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
+        }
       } else {
         console.log('[SRG] No valid cache found. Building from scratch.');
         
@@ -113,7 +121,14 @@ class SRGService {
 
   private async saveGraphImmediate() {
     try {
-      await set(DB_KEY, this.graph);
+      // Include hybrid corpus in the saved state
+      const stateToSave: GraphState = {
+        nodes: this.graph.nodes,
+        links: this.graph.links,
+        hybridCorpus: (this.hybrid as any).corpus || []
+      };
+      await set(DB_KEY, stateToSave);
+      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${stateToSave.hybridCorpus.length} corpus tokens`);
     } catch (error) {
       console.error('[SRG] Failed to save graph:', error);
     }
@@ -517,6 +532,63 @@ class SRGService {
    */
   public reverseInterfere(targetCode: string): { query: string; confidence: number } {
     return this.hybrid.reverseInterfere(targetCode);
+  }
+
+  /**
+   * Export the full SRG state for session persistence
+   * Returns nodes, links, and hybrid corpus
+   */
+  public exportState(): GraphState {
+    return {
+      nodes: this.graph.nodes,
+      links: this.graph.links,
+      hybridCorpus: (this.hybrid as any).corpus || []
+    };
+  }
+
+  /**
+   * Import SRG state from a session export
+   * Replaces current state entirely
+   */
+  public async importState(state: GraphState): Promise<void> {
+    console.log(`[SRG] Importing state: ${state.nodes.length} nodes, ${state.links.length} links, ${state.hybridCorpus?.length || 0} corpus tokens`);
+
+    this.graph = {
+      nodes: state.nodes,
+      links: state.links
+    };
+
+    this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
+
+    // Rebuild internal maps
+    this.linkMap = new Map(this.graph.links.map(l => {
+        const signature = l.type === 'semantic'
+            ? [l.source, l.target].sort().join('-') + `-${l.type}`
+            : `${l.source}-${l.target}-${l.type}`;
+        return [signature, l];
+    }));
+    this.nodeMap = new Map(this.graph.nodes.map(n => [n.id, n]));
+
+    // Restore hybrid corpus
+    if (state.hybridCorpus && state.hybridCorpus.length > 0) {
+      (this.hybrid as any).corpus = state.hybridCorpus;
+      console.log(`[SRG] Restored ${state.hybridCorpus.length} tokens to hybrid corpus`);
+    }
+
+    // Save to IndexedDB
+    await this.saveGraphImmediate();
+  }
+
+  /**
+   * Get corpus statistics
+   */
+  public getCorpusStats() {
+    const corpus = (this.hybrid as any).corpus || [];
+    return {
+      totalTokens: corpus.length,
+      uniqueWords: this.nodeIds.size,
+      estimatedBytes: corpus.join(' ').length
+    };
   }
 }
 

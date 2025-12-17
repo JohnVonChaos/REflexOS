@@ -212,10 +212,17 @@ function App() {
         const content = await file.text();
         const sessionState = JSON.parse(content) as Partial<SessionState>;
 
-        // Simple graph state is no longer used, so we only load messages
-        // The main SRG is pre-trained and its state is not part of the session
+        // Load messages and session state
         if (sessionState?.messages) {
             chat.loadState(sessionState);
+
+            // Restore SRG state (knowledge modules + hybrid corpus) if present
+            if (sessionState.graphState) {
+                console.log('[App] Restoring SRG state from session export...');
+                await srgService.importState(sessionState.graphState);
+                const stats = srgService.getCorpusStats();
+                console.log(`[App] SRG restored: ${stats.totalTokens} corpus tokens, ${stats.uniqueWords} unique words`);
+            }
         } else {
             throw new Error("Invalid session file format. The file must be a JSON object containing a 'messages' array.");
         }
@@ -227,6 +234,10 @@ function App() {
   };
 
   const handleExportState = () => {
+    const srgState = srgService.exportState();
+    const stats = srgService.getCorpusStats();
+    console.log(`[App] Exporting SRG state: ${stats.totalTokens} corpus tokens, ${stats.uniqueWords} unique words`);
+
     const sessionState: SessionState = {
         messages: chat.messages,
         projectFiles: chat.projectFiles,
@@ -235,6 +246,7 @@ function App() {
         selfNarrative: chat.selfNarrative,
         aiSettings: chat.aiSettings,
         rcb: chat.rcb,
+        graphState: srgState, // Include SRG with hybrid corpus
     };
     const blob = new Blob([JSON.stringify(sessionState, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);

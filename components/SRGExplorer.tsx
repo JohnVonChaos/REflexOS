@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { srgService } from '../services/srgService';
 import { useSrgForceLayout, GraphNode, Link } from '../hooks/useSrgForceLayout';
-import { CloseIcon, SearchIcon, ZoomInIcon, ZoomOutIcon, ResetIcon, SettingsIcon, PlayIcon } from './icons';
+import { CloseIcon, SearchIcon, ZoomInIcon, ZoomOutIcon, ResetIcon, SettingsIcon, PlayIcon, UploadIcon, BookIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
 import type { SRGSettings, TraversalAlgorithmType } from '../types';
 
@@ -58,7 +58,26 @@ export const SRGExplorer: React.FC<SRGExplorerProps> = ({ isOpen, onClose, highl
     const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
     
     const [traceQuery, setTraceQuery] = useState('');
-    const [liveTraceIds, setLiveTraceIds] = useState<string[]>([]); 
+    const [liveTraceIds, setLiveTraceIds] = useState<string[]>([]);
+    const [corpusStats, setCorpusStats] = useState(() => srgService.getCorpusStats());
+    const textFileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleLoadTextFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        try {
+            const text = await file.text();
+            console.log(`[SRGExplorer] Loading ${file.name} into corpus (${text.length} chars)`);
+            srgService.ingestHybrid(text);
+            setCorpusStats(srgService.getCorpusStats());
+            alert(`Loaded ${file.name} into knowledge base!\n${text.split(/\s+/).length} words added to corpus.`);
+        } catch (e: any) {
+            console.error('[SRGExplorer] Failed to load text file:', e);
+            alert(`Failed to load file: ${e.message}`);
+        }
+        event.target.value = '';
+    };
 
     const activeHighlightSet = useMemo(() => {
         const set = new Set([...highlightNodeIds, ...liveTraceIds]);
@@ -184,17 +203,38 @@ export const SRGExplorer: React.FC<SRGExplorerProps> = ({ isOpen, onClose, highl
                 {/* Header */}
                 <header className="flex-shrink-0 flex justify-between items-center p-3 border-b border-gray-700 bg-gray-900/80 z-10">
                     <div className="flex items-center gap-4">
-                        <button 
-                            onClick={() => setIsConfigOpen(!isConfigOpen)} 
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors ${isConfigOpen ? 'bg-cyan-700 text-white' : 'text-gray-300 hover:bg-gray-700 bg-gray-800 border border-gray-600'}`} 
+                        <button
+                            onClick={() => setIsConfigOpen(!isConfigOpen)}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors ${isConfigOpen ? 'bg-cyan-700 text-white' : 'text-gray-300 hover:bg-gray-700 bg-gray-800 border border-gray-600'}`}
                             title="Toggle Config"
                         >
                             <SettingsIcon />
                             <span className="text-sm font-semibold">Configuration</span>
                         </button>
                         <h2 className="font-semibold text-lg">SRG Engine {activeHighlightSet.size > 0 && <span className="text-xs font-normal text-orange-400 ml-2">(Trace Active)</span>}</h2>
+                        <div className="flex items-center gap-2 text-xs text-gray-400 bg-gray-800 px-3 py-1.5 rounded-md border border-gray-600">
+                            <BookIcon />
+                            <span className="font-mono">{corpusStats.totalTokens.toLocaleString()} tokens</span>
+                            <span className="text-gray-600">|</span>
+                            <span className="font-mono">{(corpusStats.estimatedBytes / 1024).toFixed(1)} KB</span>
+                        </div>
                     </div>
                     <div className="flex items-center gap-4">
+                        <input
+                            ref={textFileInputRef}
+                            type="file"
+                            accept=".txt,.md,.json"
+                            onChange={handleLoadTextFile}
+                            className="hidden"
+                        />
+                        <button
+                            onClick={() => textFileInputRef.current?.click()}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-md text-sm font-semibold"
+                            title="Load text file/book into corpus"
+                        >
+                            <UploadIcon />
+                            <span>Load Book</span>
+                        </button>
                         <div className="relative flex items-center gap-2">
                             <div className="relative">
                                 <input

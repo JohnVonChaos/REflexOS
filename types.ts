@@ -451,6 +451,7 @@ export interface GraphLink {
 export interface GraphState {
     nodes: GraphNode[];
     links: GraphLink[];
+    hybridCorpus?: string[]; // The full text corpus for interference-based recall
 }
 
 export interface PulseResult {
