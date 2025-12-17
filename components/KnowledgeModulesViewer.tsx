@@ -59,7 +59,10 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
 
       const category = categoryMap[categoryInput || '7'] || 'other';
 
-      srgService.ingestHybrid(text, {
+      const wordCount = text.split(/\s+/).length;
+      console.log(`[KnowledgeModules] Ingesting ${wordCount} words...`);
+
+      await srgService.ingestHybrid(text, {
         title,
         source: file.name,
         category
@@ -68,7 +71,6 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
       setModules(srgService.getKnowledgeModules());
       onModulesChange?.();
 
-      const wordCount = text.split(/\s+/).length;
       alert(`Loaded "${title}" into knowledge base!\n${wordCount.toLocaleString()} words added to corpus.\nCategory: ${category}`);
     } catch (e: any) {
       console.error('[KnowledgeModules] Failed to import:', e);

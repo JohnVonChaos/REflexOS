@@ -281,8 +281,9 @@ export class SRGWordHybrid {
   /**
    * Ingest text into the hybrid system.
    * Builds both position index AND relational graph.
+   * Made async to prevent UI blocking on large texts.
    */
-  ingest(text: string): void {
+  async ingest(text: string): Promise<void> {
     const tokens = text.toLowerCase()
       .replace(/[.,!?;:]/g, '')
       .split(/\s+/)
@@ -293,12 +294,12 @@ export class SRGWordHybrid {
     for (const token of tokens) {
       this.corpus.push(token);
     }
-    
+
     // Index positions for each word
     for (let i = 0; i < tokens.length; i++) {
       const word = tokens[i];
       const position = startPos + i;
-      
+
       if (!this.nodes.has(word)) {
         this.nodes.set(word, {
           word,
@@ -307,25 +308,25 @@ export class SRGWordHybrid {
           interferenceStrength: new Map()
         });
       }
-      
+
       this.nodes.get(word)!.positions.push(position);
     }
-    
+
     // Extract relations and build edges
     this.extractRelations(tokens, startPos);
-    
+
     // Build syntactic edges (sequential)
     for (let i = 0; i < tokens.length - 1; i++) {
       const word1 = tokens[i];
       const word2 = tokens[i + 1];
       const pos1 = startPos + i;
       const pos2 = startPos + i + 1;
-      
+
       this.addEdge(word1, word2, 'syntactic', pos1);
     }
-    
+
     // Calculate interference strengths between co-occurring words
-    this.updateInterferenceStrengths(tokens, startPos);
+    await this.updateInterferenceStrengths(tokens, startPos);
   }
 
   /**
@@ -454,29 +455,38 @@ export class SRGWordHybrid {
 
   /**
    * Update interference strengths between words based on co-occurrence.
+   * Async with periodic yields to prevent UI blocking on large texts.
    */
-  private updateInterferenceStrengths(tokens: string[], startPos: number): void {
+  private async updateInterferenceStrengths(tokens: string[], startPos: number): Promise<void> {
     const window = 20;
-    
+    const yieldEvery = 5000; // Yield to browser every 5000 iterations
+    let iterations = 0;
+
     for (let i = 0; i < tokens.length; i++) {
       const word1 = tokens[i];
       const pos1 = startPos + i;
-      
+
       for (let j = i + 1; j < Math.min(tokens.length, i + window); j++) {
         const word2 = tokens[j];
         const pos2 = startPos + j;
-        
+
         const amplitude = PositionHasher.calculateInterference(pos1, pos2, window);
-        
+
         const node1 = this.nodes.get(word1)!;
         const node2 = this.nodes.get(word2)!;
-        
+
         // Update bidirectional interference
         const current1 = node1.interferenceStrength.get(word2) || 0;
         node1.interferenceStrength.set(word2, current1 + amplitude);
-        
+
         const current2 = node2.interferenceStrength.get(word1) || 0;
         node2.interferenceStrength.set(word1, current2 + amplitude);
+
+        // Yield to browser periodically to prevent freezing
+        iterations++;
+        if (iterations % yieldEvery === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
       }
     }
   }

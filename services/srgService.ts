@@ -73,11 +73,11 @@ class SRGService {
         let processedTurns = 0;
         for (const turn of trainingData) {
             await this.processTextForGraph(turn, false);
-            this.hybrid.ingest(turn);
+            await this.hybrid.ingest(turn);
             processedTurns++;
             if (processedTurns % 200 === 0) {
               onProgress(`Weaving connections... ${processedTurns}/${trainingData.length}`);
-              await new Promise(r => setTimeout(r, 0)); 
+              await new Promise(r => setTimeout(r, 0));
             }
         }
 
@@ -532,20 +532,21 @@ class SRGService {
   /**
    * Ingest text into the hybrid system for learning
    * With optional metadata to track as a knowledge module
+   * Made async to prevent UI blocking on large texts
    */
-  public ingestHybrid(
+  public async ingestHybrid(
     text: string,
     metadata?: {
       title?: string;
       source?: string;
       category?: KnowledgeModule['category'];
     }
-  ): void {
+  ): Promise<void> {
     const corpus = (this.hybrid as any).corpus || [];
     const startPosition = corpus.length;
 
-    // Ingest the text
-    this.hybrid.ingest(text);
+    // Ingest the text (now async)
+    await this.hybrid.ingest(text);
 
     const endPosition = (this.hybrid as any).corpus.length;
     const tokenCount = endPosition - startPosition;
