@@ -104,23 +104,17 @@ function App() {
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false); // ADD THIS
   const [isSrgExplorerOpen, setIsSrgExplorerOpen] = useState(false);
   const [isKnowledgeModulesOpen, setIsKnowledgeModulesOpen] = useState(false);
-  const [showJellybeans, setShowJellybeans] = useState(false);
+  const [showJellybeans, setShowJellybeans] = useState(true); // Always show on launch
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [diffFiles, setDiffFiles] = useState<{file1: ProjectFile, file2: ProjectFile} | null>(null);
 
-  // Developer/test hooks for Jellybean modal
+  // Developer/test hooks for Jellybean modal (always shows on launch now)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('jellybeanTest') === '1') {
-      console.debug('[DEV] jellybeanTest param present — opening jellybean sorter');
-      setShowJellybeans(true);
-    }
-
     (window as any).openJellybeanSorter = () => {
       console.debug('[DEV] openJellybeanSorter called');
       setShowJellybeans(true);
     };
-    console.debug('[DEV] openJellybeanSorter is available on window');
+    console.debug('[DEV] Jellybean sorter shows on launch. window.openJellybeanSorter() available to re-open.');
 
     return () => { if ((window as any).openJellybeanSorter) delete (window as any).openJellybeanSorter; };
   }, []);
