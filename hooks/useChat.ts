@@ -879,13 +879,35 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                 // Add hybrid trace to cognitive trace if debugging enabled
                 if (aiSettingsRef.current.debugSRG) {
-                    const hybridTraceText = `[HYBRID SYSTEM TRACE]\n` +
+                    // Find which knowledge module this interference hit came from
+                    const position = hybridResult.interferenceHit.position;
+                    const knowledgeModules = srgService.getKnowledgeModules();
+                    const sourceModule = knowledgeModules.find(
+                        m => position >= m.startPosition && position <= m.endPosition
+                    );
+
+                    // Get corpus excerpt from the interference hit position
+                    const corpus = (srgService as any).hybrid?.corpus || [];
+                    const windowSize = 10;
+                    const startIdx = Math.max(0, position - windowSize);
+                    const endIdx = Math.min(corpus.length, position + windowSize + 1);
+                    const corpusExcerpt = corpus.slice(startIdx, endIdx).join(' ');
+
+                    let hybridTraceText = `[HYBRID SYSTEM TRACE]\n` +
                         `Interference Score: ${hybridResult.interferenceHit.score.toFixed(3)}\n` +
+                        `Corpus Position: ${position.toLocaleString()}\n`;
+
+                    if (sourceModule) {
+                        hybridTraceText += `Knowledge Module: "${sourceModule.title}" (${sourceModule.category})\n`;
+                        hybridTraceText += `Module Range: ${sourceModule.startPosition.toLocaleString()} - ${sourceModule.endPosition.toLocaleString()}\n`;
+                    }
+
+                    hybridTraceText += `\nCorpus Excerpt:\n"...${corpusExcerpt}..."\n\n` +
                         `Paths Found: ${hybridResult.paths.length}\n` +
                         `Top Path: ${hybridResult.paths[0]?.nodes.join(' → ') || 'None'}\n` +
                         `Relations: ${hybridResult.paths[0]?.relationChain.join(' → ') || 'None'}\n` +
                         `Generated: ${hybridResult.generated}`;
-                    
+
                     cognitiveTrace.push({
                         uuid: uuidv4(),
                         timestamp: Date.now(),
@@ -1080,6 +1102,22 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             workflowOutputs[stage.id] = streamedText;
                             synthesisCompleted = true;
                             loggingService.log('INFO', `Synthesis stage complete on attempt ${attempt + 1}.`);
+
+                            // Add synthesis stage to cognitive trace with full prompt details
+                            cognitiveTrace.push({
+                                uuid: uuidv4(),
+                                timestamp: Date.now(),
+                                role: 'model',
+                                type: 'conscious_thought',
+                                text: streamedText,
+                                isInContext: false,
+                                isCollapsed: false,
+                                activationScore: 0,
+                                lastActivatedAt: 0,
+                                lastActivatedTurn: 0,
+                                name: stage.name,
+                                promptDetails: synthesisPromptDetails
+                            } as any);
                             
                         } catch (error: any) {
                             synthesisError = error;
@@ -1099,6 +1137,22 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 workflowOutputs[stage.id] = fallbackText;
                                 synthesisCompleted = true;
                                 loggingService.log('INFO', 'Used fallback synthesis output due to cold-start timeout.');
+
+                                // Add fallback synthesis stage to cognitive trace
+                                cognitiveTrace.push({
+                                    uuid: uuidv4(),
+                                    timestamp: Date.now(),
+                                    role: 'model',
+                                    type: 'conscious_thought',
+                                    text: fallbackText,
+                                    isInContext: false,
+                                    isCollapsed: false,
+                                    activationScore: 0,
+                                    lastActivatedAt: 0,
+                                    lastActivatedTurn: 0,
+                                    name: stage.name + ' (fallback)',
+                                    promptDetails: synthesisPromptDetails
+                                } as any);
                             } else {
                                 throw error; // Not a cold-start 429, propagate
                             }
