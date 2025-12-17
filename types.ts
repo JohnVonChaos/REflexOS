@@ -448,10 +448,22 @@ export interface GraphLink {
   strength: number;
 }
 
+export interface KnowledgeModule {
+    id: string;
+    title: string;
+    source: string; // filename or URL
+    category: 'literature' | 'technical' | 'philosophy' | 'psychology' | 'history' | 'manual' | 'other';
+    tokenCount: number;
+    loadedAt: number;
+    startPosition: number; // Position in corpus where this module begins
+    endPosition: number; // Position in corpus where this module ends
+}
+
 export interface GraphState {
     nodes: GraphNode[];
     links: GraphLink[];
     hybridCorpus?: string[]; // The full text corpus for interference-based recall
+    knowledgeModules?: KnowledgeModule[]; // Metadata for loaded books/texts
 }
 
 export interface PulseResult {

@@ -5,6 +5,7 @@
 import type { MemoryAtom, RunningContextBuffer, AISettings, RoleSetting } from '../types';
 import { generateText, CONSCIOUS_REFLECTION_PROMPT } from './geminiService';
 import { loggingService } from './loggingService';
+import { srgService } from './srgService';
 
 export const calculateRcbSize = (rcbData: {
     conscious_focal_points: string[];
@@ -43,7 +44,9 @@ class RcbService {
     loggingService.log('DEBUG', 'Updating RCB based on last turn.');
 
     try {
-        let prompt = CONSCIOUS_REFLECTION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString());
+        // Inject corpus manifest to make planner aware of loaded knowledge
+        const corpusManifest = srgService.getCorpusManifest();
+        let prompt = CONSCIOUS_REFLECTION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString()) + '\n\n' + corpusManifest;
         prompt = prompt.replace('{TURN_CONTEXT}', turnContext);
         prompt = prompt.replace('{CURRENT_RCB}', JSON.stringify(currentRcb, null, 2));
 

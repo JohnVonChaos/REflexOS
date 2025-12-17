@@ -69,9 +69,48 @@ export const SRGExplorer: React.FC<SRGExplorerProps> = ({ isOpen, onClose, highl
         try {
             const text = await file.text();
             console.log(`[SRGExplorer] Loading ${file.name} into corpus (${text.length} chars)`);
-            srgService.ingestHybrid(text);
+
+            // Prompt for metadata
+            const title = prompt('Enter title for this knowledge module:', file.name.replace(/\.(txt|md|json)$/, ''));
+            if (!title) {
+                alert('Load cancelled - title is required');
+                event.target.value = '';
+                return;
+            }
+
+            const categoryInput = prompt(
+                'Select category:\n' +
+                '1 = Literature\n' +
+                '2 = Technical\n' +
+                '3 = Philosophy\n' +
+                '4 = Psychology\n' +
+                '5 = History\n' +
+                '6 = Manual\n' +
+                '7 = Other',
+                '7'
+            );
+
+            const categoryMap: Record<string, any> = {
+                '1': 'literature',
+                '2': 'technical',
+                '3': 'philosophy',
+                '4': 'psychology',
+                '5': 'history',
+                '6': 'manual',
+                '7': 'other'
+            };
+
+            const category = categoryMap[categoryInput || '7'] || 'other';
+
+            srgService.ingestHybrid(text, {
+                title,
+                source: file.name,
+                category
+            });
+
             setCorpusStats(srgService.getCorpusStats());
-            alert(`Loaded ${file.name} into knowledge base!\n${text.split(/\s+/).length} words added to corpus.`);
+            const wordCount = text.split(/\s+/).length;
+            alert(`Loaded "${title}" into knowledge base!\n${wordCount.toLocaleString()} words added to corpus.\nCategory: ${category}`);
         } catch (e: any) {
             console.error('[SRGExplorer] Failed to load text file:', e);
             alert(`Failed to load file: ${e.message}`);

@@ -5,6 +5,7 @@ import type { MemoryAtom, BackgroundInsight, AISettings, ProjectFile, RunningCon
 import { generateText, performWebSearch, BACKGROUND_COGNITION_PROMPT } from './geminiService';
 import { loggingService } from './loggingService';
 import { srgStorage } from './srgStorage';
+import { srgService } from './srgService';
 import { GoogleGenAI, Type } from '@google/genai';
 import { CONTEXT_PACKET_LABELS, ALL_CONTEXT_PACKETS } from '../types';
 import { resurfacingService } from './resurfacingService';
@@ -98,8 +99,12 @@ ${selfNarrative || 'None'}
 `;
       }
       loggingService.log('DEBUG', 'Generating background search query from context.');
-      const systemInstruction = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString());
-      const queryResponse = await generateText(contextString, systemInstruction, roleSetting, providers);
+
+      // Inject corpus manifest to make agent aware of loaded knowledge
+      const corpusManifest = srgService.getCorpusManifest();
+      const systemInstructionWithManifest = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString()) + '\n\n' + corpusManifest;
+
+      const queryResponse = await generateText(contextString, systemInstructionWithManifest, roleSetting, providers);
 
       let query = '';
       try {

@@ -1,12 +1,12 @@
 
 import { get, set } from 'idb-keyval';
-import type { GraphNode, GraphLink, GraphState, PulseResult, SRGTraversalConfig } from '../types';
+import type { GraphNode, GraphLink, GraphState, PulseResult, SRGTraversalConfig, KnowledgeModule } from '../types';
 import { srgDataset } from './srgDataset';
 import SRGWordHybrid, { HybridQueryResult, EntityProfile } from './srg-word-hybrid';
 
 const DB_KEY = 'srg-graph-v7'; // Incremented version for new architecture
-const ONE_MONTH_MS = 1000 * 60 * 60 * 24 * 30; 
-const SAVE_DEBOUNCE_MS = 5000; 
+const ONE_MONTH_MS = 1000 * 60 * 60 * 24 * 30;
+const SAVE_DEBOUNCE_MS = 5000;
 
 class SRGService {
   private graph: GraphState = { nodes: [], links: [] };
@@ -14,6 +14,7 @@ class SRGService {
   private linkMap: Map<string, GraphLink> = new Map();
   private nodeMap: Map<string, GraphNode> = new Map();
   private hybrid: SRGWordHybrid = new SRGWordHybrid();
+  private knowledgeModules: KnowledgeModule[] = [];
   
   private saveTimeout: any = null;
 
@@ -39,7 +40,15 @@ class SRGService {
         if (storedGraph.hybridCorpus && storedGraph.hybridCorpus.length > 0) {
           console.log(`[SRG] Restoring ${storedGraph.hybridCorpus.length} tokens to hybrid corpus`);
           (this.hybrid as any).corpus = storedGraph.hybridCorpus;
-          onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens from memory crystal.`);
+
+          // Restore knowledge modules manifest
+          if (storedGraph.knowledgeModules && storedGraph.knowledgeModules.length > 0) {
+            this.knowledgeModules = storedGraph.knowledgeModules;
+            console.log(`[SRG] Restored ${storedGraph.knowledgeModules.length} knowledge modules`);
+            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens + ${storedGraph.knowledgeModules.length} knowledge modules from memory crystal.`);
+          } else {
+            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens from memory crystal.`);
+          }
         } else {
           onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
         }
@@ -121,14 +130,15 @@ class SRGService {
 
   private async saveGraphImmediate() {
     try {
-      // Include hybrid corpus in the saved state
+      // Include hybrid corpus and knowledge modules in the saved state
       const stateToSave: GraphState = {
         nodes: this.graph.nodes,
         links: this.graph.links,
-        hybridCorpus: (this.hybrid as any).corpus || []
+        hybridCorpus: (this.hybrid as any).corpus || [],
+        knowledgeModules: this.knowledgeModules
       };
       await set(DB_KEY, stateToSave);
-      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${stateToSave.hybridCorpus.length} corpus tokens`);
+      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${stateToSave.hybridCorpus.length} corpus tokens, ${this.knowledgeModules.length} knowledge modules`);
     } catch (error) {
       console.error('[SRG] Failed to save graph:', error);
     }
@@ -521,9 +531,44 @@ class SRGService {
 
   /**
    * Ingest text into the hybrid system for learning
+   * With optional metadata to track as a knowledge module
    */
-  public ingestHybrid(text: string): void {
+  public ingestHybrid(
+    text: string,
+    metadata?: {
+      title?: string;
+      source?: string;
+      category?: KnowledgeModule['category'];
+    }
+  ): void {
+    const corpus = (this.hybrid as any).corpus || [];
+    const startPosition = corpus.length;
+
+    // Ingest the text
     this.hybrid.ingest(text);
+
+    const endPosition = (this.hybrid as any).corpus.length;
+    const tokenCount = endPosition - startPosition;
+
+    // If metadata provided, create a knowledge module entry
+    if (metadata && tokenCount > 0) {
+      const module: KnowledgeModule = {
+        id: `module_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        title: metadata.title || 'Untitled',
+        source: metadata.source || 'unknown',
+        category: metadata.category || 'other',
+        tokenCount,
+        loadedAt: Date.now(),
+        startPosition,
+        endPosition
+      };
+
+      this.knowledgeModules.push(module);
+      console.log(`[SRG] Registered knowledge module: ${module.title} (${tokenCount} tokens)`);
+
+      // Trigger save to persist the module
+      this.triggerSave();
+    }
   }
 
   /**
@@ -536,13 +581,14 @@ class SRGService {
 
   /**
    * Export the full SRG state for session persistence
-   * Returns nodes, links, and hybrid corpus
+   * Returns nodes, links, hybrid corpus, and knowledge modules
    */
   public exportState(): GraphState {
     return {
       nodes: this.graph.nodes,
       links: this.graph.links,
-      hybridCorpus: (this.hybrid as any).corpus || []
+      hybridCorpus: (this.hybrid as any).corpus || [],
+      knowledgeModules: this.knowledgeModules
     };
   }
 
@@ -551,7 +597,7 @@ class SRGService {
    * Replaces current state entirely
    */
   public async importState(state: GraphState): Promise<void> {
-    console.log(`[SRG] Importing state: ${state.nodes.length} nodes, ${state.links.length} links, ${state.hybridCorpus?.length || 0} corpus tokens`);
+    console.log(`[SRG] Importing state: ${state.nodes.length} nodes, ${state.links.length} links, ${state.hybridCorpus?.length || 0} corpus tokens, ${state.knowledgeModules?.length || 0} knowledge modules`);
 
     this.graph = {
       nodes: state.nodes,
@@ -575,6 +621,12 @@ class SRGService {
       console.log(`[SRG] Restored ${state.hybridCorpus.length} tokens to hybrid corpus`);
     }
 
+    // Restore knowledge modules manifest
+    if (state.knowledgeModules && state.knowledgeModules.length > 0) {
+      this.knowledgeModules = state.knowledgeModules;
+      console.log(`[SRG] Restored ${state.knowledgeModules.length} knowledge modules`);
+    }
+
     // Save to IndexedDB
     await this.saveGraphImmediate();
   }
@@ -589,6 +641,52 @@ class SRGService {
       uniqueWords: this.nodeIds.size,
       estimatedBytes: corpus.join(' ').length
     };
+  }
+
+  /**
+   * Get all knowledge modules
+   */
+  public getKnowledgeModules(): KnowledgeModule[] {
+    return this.knowledgeModules;
+  }
+
+  /**
+   * Generate corpus manifest text for injection into system prompts
+   * Makes subsystems AWARE of what knowledge they have access to
+   */
+  public getCorpusManifest(): string {
+    if (this.knowledgeModules.length === 0) {
+      return 'No knowledge modules currently loaded.';
+    }
+
+    const lines = ['=== AVAILABLE KNOWLEDGE MODULES ==='];
+    lines.push(`You have access to ${this.knowledgeModules.length} loaded knowledge base(s):`);
+    lines.push('');
+
+    // Group by category
+    const byCategory = new Map<string, KnowledgeModule[]>();
+    for (const module of this.knowledgeModules) {
+      const category = module.category;
+      if (!byCategory.has(category)) {
+        byCategory.set(category, []);
+      }
+      byCategory.get(category)!.push(module);
+    }
+
+    for (const [category, modules] of Array.from(byCategory.entries()).sort()) {
+      lines.push(`[${category.toUpperCase()}]`);
+      for (const module of modules) {
+        const sizeKB = Math.round((module.tokenCount * 5) / 1024); // Rough estimate: 5 chars per token
+        lines.push(`  • ${module.title} (${module.tokenCount.toLocaleString()} tokens, ~${sizeKB}KB)`);
+        lines.push(`    Source: ${module.source}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('You can query these knowledge bases using interference-based recall.');
+    lines.push('Query the local corpus BEFORE resorting to web search when possible.');
+
+    return lines.join('\n');
   }
 }
 
