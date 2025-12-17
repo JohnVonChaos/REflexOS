@@ -287,9 +287,12 @@ export class SRGWordHybrid {
       .replace(/[.,!?;:]/g, '')
       .split(/\s+/)
       .filter(t => t.length > 0);
-    
+
     const startPos = this.corpus.length;
-    this.corpus.push(...tokens);
+    // Don't use spread operator with large arrays - causes stack overflow
+    for (const token of tokens) {
+      this.corpus.push(token);
+    }
     
     // Index positions for each word
     for (let i = 0; i < tokens.length; i++) {
