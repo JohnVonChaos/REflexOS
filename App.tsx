@@ -18,6 +18,7 @@ import { srgDataset } from './services/srgDataset';
 import { JellybeanHumanCheck } from './jelly/components/JellybeanHumanCheck';
 import type { VerificationPayload } from './jelly/types';
 import { ImportHistoryPanel } from './components/ImportHistoryPanel';
+import { KnowledgeModulesViewer } from './components/KnowledgeModulesViewer';
 
 // Start with an empty project. User can import files as needed.
 const MOCK_PROJECT_FILES: ProjectFile[] = [];
@@ -102,6 +103,7 @@ function App() {
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false); // ADD THIS
   const [isSrgExplorerOpen, setIsSrgExplorerOpen] = useState(false);
+  const [isKnowledgeModulesOpen, setIsKnowledgeModulesOpen] = useState(false);
   const [showJellybeans, setShowJellybeans] = useState(false);
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [diffFiles, setDiffFiles] = useState<{file1: ProjectFile, file2: ProjectFile} | null>(null);
@@ -361,6 +363,7 @@ function App() {
           onShowInsights={() => setIsInsightsViewerOpen(true)}
           onShowLogs={() => setIsLogViewerOpen(true)}
           onShowSrgExplorer={() => { setSrgHighlightIds([]); setIsSrgExplorerOpen(true); }}
+          onShowKnowledgeModules={() => setIsKnowledgeModulesOpen(true)}
           onShowImportHistory={() => setIsImportHistoryOpen(true)}  // ADD THIS LINE
           onToggleMessageContext={chat.toggleMessageContext}
           onToggleGeneratedFileContext={chat.toggleGeneratedFileContext}
@@ -426,6 +429,10 @@ function App() {
       <LogViewer
         isOpen={isLogViewerOpen}
         onClose={() => setIsLogViewerOpen(false)}
+      />
+      <KnowledgeModulesViewer
+        isOpen={isKnowledgeModulesOpen}
+        onClose={() => setIsKnowledgeModulesOpen(false)}
       />
       {srgState === 'ready' && (
         <SRGExplorer
