@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <style>
+    .box { fill:#0b1220; stroke:#2b3947; stroke-width:2; rx:8; }
+    .title { fill:#cfe9ff; font-family:Inter,Arial,sans-serif; font-size:14px; font-weight:600 }
+    .label { fill:#e6f7ff; font-family:Inter,Arial,sans-serif; font-size:12px }
+    .small { fill:#9fb7c9; font-family:Inter,Arial,sans-serif; font-size:11px }
+    .arrow { stroke:#58c6ff; stroke-width:2; marker-end:url(#arrowhead) }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#58c6ff" />
+    </marker>
+  </defs>
+
+  <!-- Inputs & SRG -->
+  <g transform="translate(40,40)">
+    <rect x="0" y="0" width="360" height="120" class="box"/>
+    <text x="16" y="24" class="title">Inputs & Semantics</text>
+    <text x="16" y="48" class="label">Ingestion → MemoryAtoms</text>
+    <text x="16" y="66" class="label">SRG (nodes, links, traces)</text>
+  </g>
+
+  <!-- Cognitive Layers -->
+  <g transform="translate(430,40)">
+    <rect x="0" y="0" width="320" height="180" class="box"/>
+    <text x="14" y="24" class="title">Cognitive Pipeline (per-turn)</text>
+
+    <rect x="14" y="40" width="292" height="36" rx="6" fill="#08202b" stroke="#234" />
+    <text x="22" y="64" class="label">Subconscious — divergent brainstorm</text>
+
+    <rect x="14" y="82" width="292" height="36" rx="6" fill="#08202b" stroke="#234" />
+    <text x="22" y="106" class="label">Conscious — RCB-refined plan</text>
+
+    <rect x="14" y="124" width="292" height="36" rx="6" fill="#08202b" stroke="#234" />
+    <text x="22" y="148" class="label">Synthesis — final response & judgment</text>
+  </g>
+
+  <!-- RCB & Orchestrator -->
+  <g transform="translate(780,40)">
+    <rect x="0" y="0" width="360" height="120" class="box"/>
+    <text x="16" y="24" class="title">Control & Context</text>
+    <text x="16" y="48" class="label">RCB (Running Context Buffer)</text>
+    <text x="16" y="66" class="small">timestamp anchor, warnings, plan_of_action</text>
+    <text x="16" y="92" class="label">Background Orchestrator (schedules chained cycles)</text>
+  </g>
+
+  <!-- Lüscher marble -->
+  <g transform="translate(40,200)">
+    <rect x="0" y="0" width="200" height="120" class="box"/>
+    <text x="14" y="24" class="title">Lüscher Intake (Marbles)</text>
+    <text x="14" y="48" class="label">Human verification / emotional profile</text>
+    <text x="14" y="68" class="small">Used for gating: useLuscherIntake, lastLuscher</text>
+    <circle cx="150" cy="86" r="10" fill="#ffd166" />
+    <text x="130" y="110" class="small">persisted to workflow stage</text>
+  </g>
+
+  <!-- arrows connecting parts -->
+  <path d="M260 100 L430 100" class="arrow" />
+  <path d="M750 140 L780 140" class="arrow" />
+  <path d="M640 220 L640 260" class="arrow" />
+  <path d="M210 260 L430 200" class="arrow" />
+
+  <!-- Notes / legend -->
+  <g transform="translate(40,340)">
+    <rect x="0" y="0" width="1100" height="310" class="box"/>
+    <text x="16" y="24" class="title">Legend & Notes</text>
+    <text x="16" y="48" class="small">• Background cycles run chained by default: Subconscious → Conscious → Synthesis</text>
+    <text x="16" y="68" class="small">• Per-stage overrides: backgroundRunMode = 'independent' (synthesis-only)</text>
+    <text x="16" y="88" class="small">• RCB timestamp is the canonical narrative anchor; flag time_divergence > 1 year</text>
+    <text x="16" y="108" class="small">• Network reliability: fetchWithRetry (Retry-After honored; deterministic first retry)</text>
+    <text x="16" y="128" class="small">• Lüscher intake can gate workflow stages; verified profile injected into RCB.emotional_state and stage prompts</text>
+    <text x="16" y="156" class="small">• Persist outputs for traceability: subconscious_reflection, conscious_thought, steward_note</text>
+  </g>
+</svg>
