@@ -22,7 +22,8 @@ const StageInputSelector: React.FC<{
     stageIndex: number;
     allStages: WorkflowStage[];
     onInputsChange: (newInputs: ContextPacketType[]) => void;
-}> = ({ stage, stageIndex, allStages, onInputsChange }) => {
+    onUseLuscherChange?: (use: boolean) => void;
+}> = ({ stage, stageIndex, allStages, onInputsChange, onUseLuscherChange }) => {
     
     const precedingStages = allStages.slice(0, stageIndex);
 
@@ -61,6 +62,13 @@ const StageInputSelector: React.FC<{
                     ) : (
                         <p className="text-xs text-gray-500 italic p-1">No preceding stages.</p>
                     )}
+                </div>
+                <div>
+                    <h5 className="text-xs text-gray-500 font-bold uppercase mb-1">Lüscher / Intake</h5>
+                    <label className="flex items-center gap-2 p-1 rounded hover:bg-gray-700 cursor-pointer">
+                        <input type="checkbox" checked={!!stage.useLuscherIntake} onChange={e => onUseLuscherChange && onUseLuscherChange(e.target.checked)} className="form-checkbox bg-gray-700 border-gray-500 rounded text-cyan-500 focus:ring-cyan-600" />
+                        <span className="text-gray-300">Include Lüscher (human intake) in cognitive layer</span>
+                    </label>
                 </div>
             </div>
         </div>
@@ -228,6 +236,17 @@ internal revision protocol (see § 4).`,
                                             {localSettings.providers[stage.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => <option key={model} value={model}>{model}</option>)}
                                         </select>
                                     </div>
+                                    <div className="mt-3 grid grid-cols-2 gap-3 items-center">
+                                        <div>
+                                            {/* Placeholder - Lüscher intake setting moved to Configure Inputs */}
+                                        </div>
+
+                                        <label className="flex items-center gap-2">
+                                            <span className="text-gray-300 text-sm">Background cognition every</span>
+                                            <input type="number" value={stage.backgroundIntervalMinutes ?? 0} min={0} onChange={e => handleStageChange(stage.id, 'backgroundIntervalMinutes', Number(e.target.value) || null)} className="w-20 bg-gray-800 border border-gray-600 rounded-md p-1 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                            <span className="text-gray-400 text-sm">minutes (0 = off)</span>
+                                        </label>
+                                    </div>
                                      <div className={`mt-3 ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <textarea 
                                             value={stage.systemPrompt}
@@ -247,6 +266,7 @@ internal revision protocol (see § 4).`,
                                                 stageIndex={index} 
                                                 allStages={localSettings.workflow} 
                                                 onInputsChange={(newInputs) => handleStageChange(stage.id, 'inputs', newInputs)}
+                                                onUseLuscherChange={(use) => handleStageChange(stage.id, 'useLuscherIntake' as any, use as any)}
                                             />
                                         )}
                                     </div>

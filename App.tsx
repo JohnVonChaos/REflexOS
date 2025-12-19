@@ -104,7 +104,7 @@ function App() {
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false); // ADD THIS
   const [isSrgExplorerOpen, setIsSrgExplorerOpen] = useState(false);
   const [isKnowledgeModulesOpen, setIsKnowledgeModulesOpen] = useState(false);
-  const [showJellybeans, setShowJellybeans] = useState(true); // Always show on launch
+  const [showJellybeans, setShowJellybeans] = useState(false);
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [diffFiles, setDiffFiles] = useState<{file1: ProjectFile, file2: ProjectFile} | null>(null);
 

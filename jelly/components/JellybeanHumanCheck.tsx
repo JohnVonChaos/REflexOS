@@ -28,46 +28,33 @@ interface BeanState {
   zIndex: number;
 }
 
-// SVG Component for the Jellybean shape
-const JellybeanSVG = ({ color, className }: { color: string, className?: string }) => (
-  <svg 
-    viewBox="0 0 100 60" 
-    className={className}
-    style={{ overflow: 'visible' }}
-  >
+// SVG Component for the Marble (circular) shape with specular glint
+const MarbleSVG = ({ color, className }: { color: string, className?: string }) => (
+  <svg viewBox="0 0 100 100" className={className} style={{ overflow: 'visible' }}>
     <defs>
-      <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <radialGradient id={`rad-${color}`} cx="30%" cy="25%" r="80%">
+        <stop offset="0%" stopColor="#ffffff" stopOpacity="0.55" />
+        <stop offset="40%" stopColor={color} stopOpacity="1" />
+        <stop offset="100%" stopColor="#000000" stopOpacity="0.12" />
+      </radialGradient>
+      <filter id="soft-glow" x="-20%" y="-20%" width="140%" height="140%">
         <feGaussianBlur stdDeviation="2" result="blur" />
-        <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        <feMerge>
+          <feMergeNode in="blur" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
       </filter>
-      <linearGradient id={`grad-${color}`} x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stopColor="white" stopOpacity="0.3" />
-        <stop offset="100%" stopColor="black" stopOpacity="0.1" />
-      </linearGradient>
     </defs>
-    
-    {/* Main Bean Body - Kidney Shape */}
-    <path 
-      d="M20,30 C5,30 0,15 10,5 C20,-5 40,-5 50,5 C60,10 75,10 85,20 C95,30 95,50 80,55 C65,60 45,60 35,50 C25,45 25,40 20,30 Z" 
-      fill={color}
-      stroke="rgba(0,0,0,0.1)"
-      strokeWidth="1"
-    />
-    
-    {/* Subtle Gradient Overlay for Volume */}
-    <path 
-      d="M20,30 C5,30 0,15 10,5 C20,-5 40,-5 50,5 C60,10 75,10 85,20 C95,30 95,50 80,55 C65,60 45,60 35,50 C25,45 25,40 20,30 Z" 
-      fill={`url(#grad-${color})`}
-      style={{ mixBlendMode: 'overlay' }}
-    />
 
-    {/* Specular Highlight (The "Shiny" part) */}
-    <path 
-      d="M15,15 Q25,5 40,8 Q50,10 50,15 Q50,20 40,18 Q25,15 15,15" 
-      fill="white" 
-      opacity="0.5" 
-    />
-    <ellipse cx="80" cy="25" rx="3" ry="5" transform="rotate(-20 80 25)" fill="white" opacity="0.3" />
+    {/* Main circular marble */}
+    <circle cx="50" cy="50" r="40" fill={`url(#rad-${color})`} stroke="rgba(0,0,0,0.12)" strokeWidth="1" filter="url(#soft-glow)" />
+
+    {/* Subtle glossy glint */}
+    <ellipse cx="35" cy="35" rx="18" ry="10" transform="rotate(-25 35 35)" fill="white" opacity="0.45" />
+    <circle cx="60" cy="28" r="4" fill="white" opacity="0.25" />
+
+    {/* Tiny specular flare */}
+    <path d="M68 62 Q70 58 74 57 Q70 60 68 62" fill="white" opacity="0.12" />
   </svg>
 );
 
@@ -336,7 +323,7 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[500px] w-full max-w-2xl bg-slate-800 rounded-xl shadow-2xl overflow-hidden border border-slate-700 select-none">
+    <div role="dialog" aria-modal="true" className="flex flex-col items-center justify-center w-full max-w-2xl max-h-[80vh] bg-slate-800 rounded-xl shadow-2xl overflow-hidden border border-slate-700 select-none">
       
       {/* Header */}
       <div className="w-full p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center z-30">
@@ -346,7 +333,7 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
             Preference Verification
           </h2>
           <p className="text-slate-400 text-xs mt-1">
-            Drag the jelly beans into the jar in the order you <span className="text-white font-medium">like them most</span>.
+            Drag the marbles into the jar in the order you <span className="text-white font-medium">like them most</span>.
           </p>
         </div>
         {onCancel && (
@@ -362,7 +349,7 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
       {/* Game Area */}
       <div 
         ref={containerRef}
-        className="relative w-full aspect-[4/3] bg-slate-800 touch-none overflow-hidden"
+        className="relative w-full max-h-[64vh] bg-slate-800 touch-none overflow-auto p-4"
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerUp}
@@ -374,7 +361,7 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
         {/* --- JAR (Back Layer) --- */}
         <div 
           ref={jarRef}
-          className="absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-64 border-4 border-slate-600/30 rounded-b-3xl rounded-t-lg bg-slate-900/40 backdrop-blur-sm z-0"
+          className="absolute top-[40%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-64 border-4 border-slate-600/30 rounded-b-3xl rounded-t-lg bg-slate-900/40 backdrop-blur-sm z-0"
         />
 
         {/* --- PLACED BEANS LAYER --- */}
@@ -385,14 +372,14 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
                position: 'absolute',
                left: `${bean.x}%`,
                top: `${bean.y}%`,
-               width: '60px',
-               height: '36px',
+               width: '56px',
+               height: '56px',
                zIndex: bean.zIndex,
                transform: `translate(-50%, -50%) rotate(${bean.rotation}deg)`,
                transition: 'transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
              }}
            >
-             <JellybeanSVG 
+             <MarbleSVG 
                color={COLOR_CONFIG[bean.id].hex} 
                className="w-full h-full drop-shadow-md"
              />
@@ -418,8 +405,8 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
               position: 'absolute',
               left: `${bean.x}%`,
               top: `${bean.y}%`,
-              width: '60px', 
-              height: '36px',
+              width: '56px', 
+              height: '56px',
               zIndex: bean.zIndex,
               transform: `translate(-50%, -50%) rotate(${bean.rotation}deg) scale(${isFrozen ? 0.9 : 1})`,
               cursor: isFrozen ? 'default' : 'grab',
@@ -427,7 +414,7 @@ export const JellybeanHumanCheck: React.FC<JellybeanHumanCheckProps> = ({ onVeri
             }}
             className="hover:scale-105 transition-transform"
           >
-            <JellybeanSVG 
+            <MarbleSVG 
               color={COLOR_CONFIG[bean.id].hex} 
               className={`w-full h-full drop-shadow-xl ${isFrozen ? 'opacity-50 grayscale' : ''}`}
             />

@@ -22,7 +22,8 @@ const StageInputSelector: React.FC<{
     stageIndex: number;
     allStages: WorkflowStage[];
     onInputsChange: (newInputs: ContextPacketType[]) => void;
-}> = ({ stage, stageIndex, allStages, onInputsChange }) => {
+    onUseLuscherChange?: (use: boolean) => void;
+}> = ({ stage, stageIndex, allStages, onInputsChange, onUseLuscherChange }) => {
     
     const precedingStages = allStages.slice(0, stageIndex);
 
@@ -61,6 +62,13 @@ const StageInputSelector: React.FC<{
                     ) : (
                         <p className="text-xs text-gray-500 italic p-1">No preceding stages.</p>
                     )}
+                </div>
+                <div>
+                    <h5 className="text-xs text-gray-500 font-bold uppercase mb-1">Lüscher / Intake</h5>
+                    <label className="flex items-center gap-2 p-1 rounded hover:bg-gray-700 cursor-pointer">
+                        <input type="checkbox" checked={!!stage.useLuscherIntake} onChange={e => onUseLuscherChange && onUseLuscherChange(e.target.checked)} className="form-checkbox bg-gray-700 border-gray-500 rounded text-cyan-500 focus:ring-cyan-600" />
+                        <span className="text-gray-300">Include Lüscher (human intake) in cognitive layer</span>
+                    </label>
                 </div>
             </div>
         </div>
@@ -135,7 +143,8 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
             provider: 'gemini',
             selectedModel: settings.providers.gemini.identifiers.split('\n')[0] || 'gemini-2.5-flash',
             systemPrompt: 'You are a helpful AI assistant.',
-            inputs: ['USER_QUERY']
+            inputs: ['USER_QUERY'],
+            backgroundRunMode: 'chained'
         };
         setLocalSettings(prev => {
             const newWorkflow = [...prev.workflow];
@@ -211,6 +220,13 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
                                             {localSettings.providers[stage.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => <option key={model} value={model}>{model}</option>)}
                                         </select>
                                     </div>
+                                    <div className={`mt-3 grid grid-cols-2 gap-3 transition-opacity ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                                        <label className="text-xs text-gray-400">Background Run Mode</label>
+                                        <select value={(stage as any).backgroundRunMode || 'chained'} onChange={e => handleStageChange(stage.id, 'backgroundRunMode' as any, e.target.value as any)} className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none">
+                                            <option value="chained">Chained (Subconscious → Conscious → Synthesis)</option>
+                                            <option value="independent">Independent (Synthesis only)</option>
+                                        </select>
+                                    </div>
                                      <div className={`mt-3 ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <textarea 
                                             value={stage.systemPrompt}
@@ -230,6 +246,7 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
                                                 stageIndex={index} 
                                                 allStages={localSettings.workflow} 
                                                 onInputsChange={(newInputs) => handleStageChange(stage.id, 'inputs', newInputs)}
+                                                onUseLuscherChange={(use) => handleStageChange(stage.id, 'useLuscherIntake' as any, use as any)}
                                             />
                                         )}
                                     </div>
