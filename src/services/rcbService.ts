@@ -26,7 +26,8 @@ class RcbService {
     lastTurnAtoms: MemoryAtom[],
     currentRcb: RunningContextBuffer,
     roleSetting: RoleSetting,
-    providers: AISettings['providers']
+    providers: AISettings['providers'],
+    aiSettings?: any
   ): Promise<RunningContextBuffer> {
     if (lastTurnAtoms.length < 2) {
       return currentRcb;
@@ -65,6 +66,23 @@ class RcbService {
             lastUpdatedAt: Date.now(),
         };
 
+        // Inject emotional_state.luscher when a workflow has a lastLuscher configured
+        try {
+          const workflow = aiSettings?.workflow || [];
+          const stageWithLuscher = workflow.find((s: any) => s.useLuscherIntake && s.lastLuscher);
+          if (stageWithLuscher && stageWithLuscher.lastLuscher) {
+            (newRcb as any).emotional_state = (newRcb as any).emotional_state || {};
+            (newRcb as any).emotional_state.luscher = stageWithLuscher.lastLuscher;
+            (newRcb as any).emotional_state_summary = (stageWithLuscher.lastLuscher && (typeof stageWithLuscher.lastLuscher === 'object')) ? (() => {
+              const seq = (stageWithLuscher.lastLuscher.sequence || []).slice(0,2).join(', ');
+              return `User chose ${seq} first; Lüscher profile captured at ${stageWithLuscher.lastLuscher.takenAt}`;
+            })() : undefined;
+          }
+        } catch (e) {
+          // non-fatal
+          loggingService.log('DEBUG', 'Failed to inject Lüscher into RCB', { error: e });
+        }
+
         newRcb.size_current = calculateRcbSize(newRcb);
 
         // Simple warning system
@@ -84,8 +102,29 @@ class RcbService {
         return newRcb;
 
     } catch (error) {
-      loggingService.log('ERROR', 'RCB Update failed, returning original.', { error });
-      return currentRcb; // Return original RCB on error to prevent data loss
+        loggingService.log('WARN', 'RCB reflection LLM failed; returning minimal RCB update.', { error });
+        // Fallback: return a minimal RCB update that at least records turn times
+        try {
+          const fallback: RunningContextBuffer = {
+            ...currentRcb,
+            timestamp: lastModelAtom.timestamp || currentRcb.timestamp,
+            lastUpdatedAt: Date.now(),
+          } as any;
+
+          // If timestamp diverges significantly from system time, add a warning and set resonanceAnchor
+          if (Math.abs((fallback.timestamp || 0) - Date.now()) > 365 * 24 * 60 * 60 * 1000) {
+            fallback.warnings = [...(fallback.warnings || []), { timestamp: Date.now(), type: 'time_divergence' } as any];
+            (fallback as any).resonanceAnchor = fallback.timestamp;
+            (fallback as any).lastTurnSystemTime = Date.now();
+          } else {
+            (fallback as any).lastTurnSystemTime = fallback.timestamp;
+          }
+
+          return fallback;
+        } catch (e) {
+          loggingService.log('ERROR', 'RCB fallback failed; returning original RCB.', { error: e });
+          return currentRcb;
+        }
     }
   }
 }

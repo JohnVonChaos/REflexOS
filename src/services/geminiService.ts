@@ -4,6 +4,7 @@ import { GoogleGenAI, Content, GenerateContentResponse, Part } from '@google/gen
 import { toolDeclarations } from './toolService';
 import type { AIProvider, ProviderSettings, RoleSetting, AISettings } from '../types';
 import { loggingService } from './loggingService';
+import { fetchWithRetry } from './networkRetry';
 
 export const SUBCONSCIOUS_PROMPT = `You are the Subconscious layer, a creative and associative process. The current date is {CURRENT_DATETIME}.
 
@@ -199,7 +200,7 @@ async function* openAIGenerateStream(model: string, contents: Content[], systemI
     });
     loggingService.log('DEBUG', `Request to OpenAI-compatible stream API: ${url}`, { model, systemInstruction: systemInstruction.substring(0, 100) + '...' });
 
-    const response = await fetch(url, { method: 'POST', headers, body });
+    const response = await fetchWithRetry(url, { method: 'POST', headers, body });
     if (!response.ok) {
         const errorBody = await response.text();
         loggingService.log('ERROR', `OpenAI-compatible API stream error: ${response.status} ${response.statusText}`, { errorBody });
@@ -269,7 +270,7 @@ async function openAIGenerateText(model: string, contents: Content[], systemInst
     });
     loggingService.log('DEBUG', `Request to OpenAI-compatible text API: ${url}`, { model, systemInstruction: systemInstruction.substring(0, 100) + '...' });
 
-    const response = await fetch(url, { method: 'POST', headers, body });
+    const response = await fetchWithRetry(url, { method: 'POST', headers, body });
     if (!response.ok) {
         const errorBody = await response.text();
         loggingService.log('ERROR', `OpenAI-compatible API text error: ${response.status} ${response.statusText}`, { errorBody });

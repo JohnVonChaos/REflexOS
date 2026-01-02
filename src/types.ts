@@ -8,6 +8,52 @@ export interface ProjectFile {
   importedAt: number;
 }
 
+// Files stored in the internal Reflex sandbox (reflex://)
+export interface ReflexFile {
+  id: string;
+  path: string; // e.g. reflex://code/main.ts
+  kind: 'code' | 'note' | 'config' | 'asset' | 'other';
+  title: string;
+  content: string;
+  lastModified: number;
+  tags?: string[];
+  workState?: {
+    status?: 'draft' | 'staged' | 'committed' | 'archived';
+    lastCursorLine?: number;
+    lastTaskSummary?: string;
+    relatedTraceIds?: string[];
+    updatedAt?: number;
+  };
+}
+
+export type StagingChangeType = 'added' | 'modified' | 'deleted';
+
+export interface StagingChange {
+  path: string;
+  type: StagingChangeType;
+  before?: string | null;
+  after?: string | null;
+}
+
+export interface StagingCommit {
+  id: string;
+  timestamp: number;
+  author?: string;
+  message?: string;
+  changes: StagingChange[];
+}
+
+export interface StagingLayer {
+  listFiles(): string[];
+  readFile(path: string): string | null;
+  writeFile(path: string, content: string): void;
+  deleteFile(path: string): void;
+  diff(): StagingChange[];
+  commit(message?: string, author?: string): StagingCommit;
+  discard(): void;
+  getCommits(): StagingCommit[];
+}
+
 export type MemoryAtomType = 'user_message' | 'model_response' | 'steward_note' | 'conscious_thought' | 'subconscious_reflection' | 'axiom' | 'srg_augmentation';
 
 export interface GeneratedFile {

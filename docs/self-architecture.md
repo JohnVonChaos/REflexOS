@@ -31,6 +31,57 @@ A lightweight, maintainable blueprint of the AI's internal design: SRG-based int
 - LuscherResult: { sequence, timingMs, takenAt }
 - RunningContextBuffer (RCB): { id, timestamp, lastUpdatedAt, conscious_focal_points, plan_of_action }
 
+## 2.x) Workspace & Staging Filesystem (Draft)
+
+- ReflexFile: internal sandbox file format (id, path `reflex://...`, kind, title, content, lastModified, tags, workState). This provides a persistent, policy-scoped representation for files owned by Reflex (code, notes, configs, assets).
+- StagingLayer: an overlay filesystem abstraction with a read-only base layer and a writeable overlay. Operations: `listFiles()`, `readFile(path)`, `writeFile(path, content)`, `deleteFile(path)`, `diff()`, `commit(message?, author?)`, `discard()`, `getCommits()`.
+
+Purpose: allow safe, copy-on-write workflows where edits are staged in an overlay and only applied atomically on `commit` (or dropped on `discard`). Useful for workflows where Reflex proposes changes (patches) and a human reviews before commit.
+
+Behavioral notes:
+- Diff output is a simple change list (added/modified/deleted) with before/after content for review.
+- Commits are recorded as snapshots (id, timestamp, author, message, changes[]). These snapshots are queryable and can be surfaced in the HUD (`SHOW_RECENT_COMMITS`) or referenced by background tasks.
+- Implementation in repo: `src/services/stagingLayer.ts` (in-memory prototype `InMemoryStagingLayer`) and types in `src/types.ts` (`ReflexFile`, `StagingChange`, `StagingCommit`, `StagingLayer`).
+
+Next steps:
+- Persist overlay + commits to IndexedDB (idb) or a small SQLite/WASM store for durability.
+- Add UI: `File HUD` showing staged changes, commit history, and buttons for `Commit`/`Discard`/`Review Diff`.
+- Add access control: per-context roots (e.g., `reflex://code/`, `reflex://notes/`) and enforce path scope in APIs.
+
+### Internal OS: Workspace Manager & Scheduler (Implementation)
+
+To move this into code, the following components are implemented (prototype in repo):
+
+- **ReflexFile (refined)** — extends the earlier schema with a structured `workState` object to hold `lastCursorLine`, `lastTaskSummary`, `relatedTraceIds`, and `updatedAt`. Files are stored under `reflex://` paths and are addressed by path.
+
+- **WorkspaceManager** (`src/services/workspaceManager.ts`) — persistent manager backed by IndexedDB (`reflex-workspace-v1`) with these APIs:
+	- FS_LIST(pathPrefix, {limit}) -> list file summaries (path, title, kind, lastModified, tags, workState)
+	- FS_OPEN(path) -> { file }
+	- FS_SAVE(path, newContent, workStatePatch) -> updated `ReflexFile` (persists content and workState)
+	- FS_RECENT(limit) -> recently touched files list
+	- seedFile(file) -> helper to import existing files into workspace
+
+	Notes: edits are stored in the staging layer (`reflex-staging-v1`) for review; `FS_SAVE` persists the canonical file and updates recents.
+
+- **ReflexScheduler** (`src/services/reflexScheduler.ts`) — tiny scheduler with register/unregister/tick/start/stop to run maintenance tasks. Example tasks to register:
+	- `reindex_srg` — re-index modules or run a lightweight SRG sweep (runs on a human-friendly interval)
+	- `check_todos` — scan `reflex://notes/` for TODO markers and surface top items to the HUD
+	- `refresh_hud` — refresh summarization panels and background diagnostics
+
+Design notes and safety:
+- The workspace uses a **dedicated IndexedDB database** to avoid SRG DB contention (SRG storage can be kept large and specialized). The staging DB is separate (`reflex-staging-v1`) so commit and review flows don't affect workspace lookups.
+- Commit snapshots are intentionally compact change lists to minimize DB growth; a pruning policy (e.g., keep latest N commits or commits newer than X days) is planned as a follow-up.
+- The scheduler runs at human-friendly intervals and tasks are asynchronous; `tick()` triggers tasks whose interval elapsed and does not block the main UI.
+
+Example small FS usage (conceptual):
+
+1. User asks: `Resume work on reflex://code/backgroundCognition.ts`
+2. System: `const { file } = await workspace.fsOpen('reflex://code/backgroundCognition.ts')`
+3. System restores last cursor position from `file.workState.lastCursorLine` and loads related SRG traces from `file.workState.relatedTraceIds`.
+
+This gives Reflex a deterministic workspace it can operate on, resume tasks against, and schedule routine maintenance for.
+
+
 ## 4) Key axioms / guiding principles
 
 - Correction is Care — corrections should be treated as constructive updates.

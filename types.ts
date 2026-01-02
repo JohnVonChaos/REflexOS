@@ -196,7 +196,21 @@ export interface WorkflowStage {
     enableWebSearch?: boolean;  // Enable web search for this stage
     enableTimedCycle?: boolean; // Enable autonomous timed execution
     timerSeconds?: number;      // How often to run this stage autonomously (in seconds)
+  // Lüscher intake gating: if true, require a Lüscher intake before the first reflex turn
+  useLuscherIntake?: boolean;
+  // Store the last verified Lüscher result for this workflow stage (optional)
+  lastLuscher?: LuscherResult;
+  // Optional per-workflow background cognition interval in minutes (null or 0 = disabled)
+  backgroundIntervalMinutes?: number | null;
+  // Background run mode: chained (default) runs Subconscious->Conscious->Synthesis; independent runs individual stage synthesis only
+  backgroundRunMode?: 'chained' | 'independent';
 }
+
+export type LuscherResult = {
+  sequence: string[]; // e.g. ["GREY","BLACK",...]
+  timingMs: Record<string, number>;
+  takenAt: string; // ISO timestamp
+};
 
 // --- SRG Engine Configuration Types ---
 export type TraversalAlgorithmType = 'bfs' | 'dfs' | 'weighted' | 'random-walk' | 'attention' | 'custom';
@@ -345,7 +359,9 @@ Example:
                 inputs: ['RCB', 'CONTEXT_FILES', 'RECENT_HISTORY', 'BACKGROUND_INSIGHTS', 'RECALLED_AXIOMS', 'CORE_NARRATIVE'],
                 enableWebSearch: true,
                 enableTimedCycle: true,
-                timerSeconds: 360 // 6 minutes
+              timerSeconds: 360, // 6 minutes
+              useLuscherIntake: false,
+              backgroundIntervalMinutes: null,
             },
             {
                 id: 'autonomous_research_example',
@@ -364,7 +380,9 @@ Example:
                 inputs: ['USER_QUERY', 'RCB', 'RECENT_HISTORY', 'CONTEXT_FILES'],
                 enableWebSearch: true,
                 enableTimedCycle: true,
-                timerSeconds: 300 // 5 minutes
+                timerSeconds: 300, // 5 minutes
+                useLuscherIntake: false,
+                backgroundIntervalMinutes: null,
             },
             {
                 id: 'subconscious_default',
@@ -374,6 +392,7 @@ Example:
                 selectedModel: defaultGemini,
                 systemPrompt: SUBCONSCIOUS_DEFAULT_PROMPT,
                 inputs: ['USER_QUERY', 'RCB', 'RECALLED_AXIOMS', 'RECENT_HISTORY', 'RESONANCE_MEMORIES', 'PREVIOUS_COGNITIVE_TRACE', 'CONTEXT_FILES']
+              , useLuscherIntake: false, backgroundIntervalMinutes: null
             },
             {
                 id: 'conscious_default',
@@ -383,6 +402,7 @@ Example:
                 selectedModel: defaultGemini,
                 systemPrompt: CONSCIOUS_DEFAULT_PROMPT,
                 inputs: ['USER_QUERY', 'RCB', 'RECALLED_AXIOMS', 'RECENT_HISTORY', 'CONTEXT_FILES', 'OUTPUT_OF_subconscious_default', 'PREVIOUS_COGNITIVE_TRACE']
+              , useLuscherIntake: false, backgroundIntervalMinutes: null
             },
             {
                 id: 'synthesis_default',
@@ -392,6 +412,7 @@ Example:
                 selectedModel: defaultGemini,
                 systemPrompt: SYNTHESIS_DEFAULT_PROMPT,
                 inputs: ['USER_QUERY', 'BACKGROUND_INSIGHTS', 'CONTEXT_FILES', 'OUTPUT_OF_conscious_default']
+              , useLuscherIntake: false, backgroundIntervalMinutes: null
             },
             {
                 id: 'axiom_generation_default',
@@ -401,6 +422,7 @@ Example:
                 selectedModel: defaultGemini,
                 systemPrompt: AXIOM_GENERATION_PROMPT,
                 inputs: ['USER_QUERY', 'CONTEXT_FILES', 'OUTPUT_OF_conscious_default', 'OUTPUT_OF_synthesis_default']
+              , useLuscherIntake: false, backgroundIntervalMinutes: null
             }
         ],
         roles,

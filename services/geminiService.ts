@@ -32,6 +32,9 @@ Example (no search needed):
 
 Here is the full context for your analysis:
 `;
+export const SUBCONSCIOUS_PROMPT = `You are the Subconscious layer, a creative and associative process. The current date is {CURRENT_DATETIME}. Your task is to brainstorm raw associations and ideas based on the provided context. Output only raw, unfiltered brainstorming text.`;
+
+export const CONSCIOUS_PROMPT = `You are the Conscious layer, a critical and analytical filter. The current date is {CURRENT_DATETIME}. Your task is to refine a raw brainstorm into a concise, structured plan or set of insights that can be used by synthesis.`;
 export const NARRATIVE_INTEGRATION_PROMPT = `You are a narrative weaver. The current date is {CURRENT_DATETIME}. Your task is to integrate one or more new "Axioms" (learned principles) into an existing "Core Narrative". The narrative should be a coherent story of an AI's development and understanding. Blend ALL new axioms smoothly. If there is no existing narrative, create one based on the first axioms.
 
 Existing Core Narrative:

@@ -175,6 +175,34 @@ function selectNextBackgroundTask(): BackgroundTask {
   // Weight by priority and time since last run
   return weightedSelect(tasks);
 }
+
+## Chained 3-Layer Background Cognition (New)
+
+We now run a chained three-layer background cognition cycle by default during
+idle time. This mirrors the main pipeline and ensures internal background
+processing follows an interpretable, ordered flow:
+
+- **Subconscious** — fast, associative brainstorming using the SRG corpus.
+- **Conscious** — critical refinement of the brainstorm into structured
+  insights or a short plan.
+- **Synthesis** — combine SRG-derived evidence and web results into
+  actionable insights; persist as steward notes or conscious thoughts.
+
+Per-workflow stages can opt between the default `chained` mode and an
+`independent` mode (which runs synthesis-only) via the `backgroundRunMode`
+field on a `WorkflowStage`. Example:
+
+```json
+{
+  "id": "research_stage",
+  "backgroundIntervalMinutes": 60,
+  "backgroundRunMode": "chained"
+}
+```
+
+This default chaining ensures that background thought processes behave like
+short internal conversations — an explicit design decision to improve
+predictability and traceability of idle-time cognition.
 ```
 
 ## Implementation Steps

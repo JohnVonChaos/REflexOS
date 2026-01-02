@@ -2,7 +2,8 @@
 
 // FIX: Update import to use RoleSetting and context packets
 import type { MemoryAtom, BackgroundInsight, AISettings, ProjectFile, RunningContextBuffer, RoleSetting, WorkflowStage } from '../types';
-import { generateText, performWebSearch, BACKGROUND_COGNITION_PROMPT } from './geminiService';
+import { generateText, performWebSearch, BACKGROUND_COGNITION_PROMPT, SUBCONSCIOUS_PROMPT, CONSCIOUS_PROMPT } from './geminiService';
+import { getDefaultSettings } from '../types';
 import { loggingService } from './loggingService';
 import { srgStorage } from './srgStorage';
 import { srgService } from './srgService';
@@ -22,12 +23,22 @@ interface FullCognitionContext {
 
 class BackgroundCognitionService {
   /**
-   * MULTI-LAYER BACKGROUND COGNITION WITH SRG-FIRST RECALL
-   * Applies the 3-layer cognitive architecture to background research
+   * MULTI-LAYER BACKGROUND COGNITION WITH SRG-FIRST RECALL (DOCUMENTATION)
    *
-   * SUBCONSCIOUS: Query SRG for relevant knowledge from loaded corpus
-   * CONSCIOUS: Evaluate SRG results, decide if web search needed
-   * SYNTHESIS: Combine SRG knowledge + web results
+   * The background cognition system uses a chained three-layer architecture
+   * modelled after the main pipeline so that idle-time processing behaves like
+   * an internal thought process. The default execution mode is "chained":
+   *
+   *   SUBCONSCIOUS: produce a raw, associative brainstorm (fast, divergent)
+   *   CONSCIOUS:  refine and critique the brainstorm (focused, coherent)
+   *   SYNTHESIS:  merge SRG-derived context + any web results into actionable
+   *               insights and steward notes
+   *
+   * The chained cycle preserves ordering and passes the previous layer's
+   * output forward (subconscious -> conscious -> synthesis). Outputs are
+   * persisted as `subconscious_reflection` and `conscious_thought` atoms for
+   * traceability and debugging. Per-workflow stages can opt-out to run the
+   * "independent" mode which runs synthesis only.
    */
   async runWebSearchCycle(
     context: FullCognitionContext,
@@ -243,12 +254,17 @@ ${selfNarrative || 'None'}
 
   // FIX: Updated to use workflow-style context assembly
 
-  async runSynthesisCycle(allMessages: any[], currentTurn: number): Promise<string[]> {
+  async runSynthesisCycle(allMessages: any[], currentTurn: number, priorOutputs?: { subconscious?: string; conscious?: string }): Promise<string[]> {
     try {
       const fullContext = await (resurfacingService as any).buildContextWithResurfacing(allMessages, currentTurn, 'idle', '');
 
       const oldMemories = fullContext.total.filter((item: any) => (item.timestamp || 0) < currentTurn - 50);
       const recentMemories = fullContext.total.filter((item: any) => (item.timestamp || 0) >= currentTurn - 10);
+
+      // If the conscious layer supplied output, include it as a recent memory to inform synthesis
+      if (priorOutputs && priorOutputs.conscious) {
+        recentMemories.push({ text: priorOutputs.conscious, timestamp: currentTurn });
+      }
 
       const candidates: string[] = [];
 
@@ -304,6 +320,57 @@ ${selfNarrative || 'None'}
       loggingService.log('INFO', 'Reflection cycle persisted a conscious thought.', { topWords: top });
     } catch (e) {
       loggingService.log('ERROR', 'Reflection cycle failed', { error: e });
+    }
+  }
+
+  /**
+   * runChainedCycle(allMessages, currentTurn, roleSetting?, providers?)
+   * ------------------------------------------------------------------
+   * Execute a single chained background cognition cycle consisting of:
+   *  1) Subconscious brainstorm (raw associations driven by SRG + context)
+   *  2) Conscious refinement (distill brainstorm into a plan/summary)
+   *  3) Synthesis (combine conscious output with resurfacing results)
+   *
+   * Each stage is short-lived and returns text that is passed to the next
+   * stage; final synthesis results are returned and optionally persisted as
+   * steward notes. The function accepts optional role and provider settings
+   * so scheduled stage runs can use per-stage provider configuration.
+   */
+
+  /**
+   * Run a chained subconscious -> conscious -> synthesis background cycle.
+   */
+  async runChainedCycle(allMessages: any[], currentTurn: number, roleSetting?: RoleSetting, providers?: AISettings['providers']) {
+    try {
+      const defaults = getDefaultSettings();
+      const role = roleSetting || defaults.roles.background;
+      const provs = providers || defaults.providers;
+
+      loggingService.log('INFO', '[BACKGROUND SUBCONSCIOUS] Running subconscious layer (chained).');
+      const convo = allMessages.filter(m => m.type === 'user_message' || m.type === 'model_response').slice(-40).map(m => `${m.role}: ${m.text}`).join('\n');
+      const sysSub = SUBCONSCIOUS_PROMPT.replace('{CURRENT_DATETIME}', new Date().toString());
+      const subconscious = (await generateText(convo, sysSub, role, provs)) || '';
+
+      loggingService.log('INFO', '[BACKGROUND CONSCIOUS] Running conscious layer (chained).');
+      const sysCon = CONSCIOUS_PROMPT.replace('{CURRENT_DATETIME}', new Date().toString());
+      const consciousInput = `Raw brainstorm:\n${subconscious}\n\nContext:\n${convo}`;
+      const conscious = (await generateText(consciousInput, sysCon, role, provs)) || '';
+
+      loggingService.log('INFO', '[BACKGROUND SYNTHESIS] Running synthesis layer (chained).');
+      const synthesis = await this.runSynthesisCycle(allMessages, currentTurn, { subconscious, conscious });
+
+      try {
+        const { memoryService } = await import('./memoryService');
+        if (subconscious && subconscious.trim()) await memoryService.createAtom({ type: 'subconscious_reflection', role: 'model', text: subconscious, isInContext: false });
+        if (conscious && conscious.trim()) await memoryService.createAtom({ type: 'conscious_thought', role: 'model', text: conscious, isInContext: false });
+      } catch (e) {
+        loggingService.log('WARN', 'Failed to persist chained outputs', { error: e });
+      }
+
+      return { subconscious, conscious, synthesis };
+    } catch (e) {
+      loggingService.log('ERROR', 'runChainedCycle failed', { error: e });
+      return { subconscious: '', conscious: '', synthesis: [] };
     }
   }
 }

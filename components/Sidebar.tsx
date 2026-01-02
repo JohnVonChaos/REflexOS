@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ProjectFile, MemoryAtom, GeneratedFile, BackgroundInsight } from '../types';
-import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon } from './icons';
+import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon, ScalesIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
 import { speechService } from '../services/speechService';
 import { InsightDisplay } from './InsightDisplay';
@@ -238,10 +238,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                         {onShowImportHistory && (
                                             <button
                                                 onClick={onShowImportHistory}
-                                                title="Show Import History"
+                                                title="Calibration"
+                                                aria-label="Calibration"
                                                 className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
                                             >
-                                                <HistoryIcon />
+                                                <ScalesIcon />
                                             </button>
                                         )}
                     <button

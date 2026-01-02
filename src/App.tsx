@@ -14,6 +14,7 @@ import { InsightsViewer } from './components/InsightsViewer';
 import { LogViewer } from './components/LogViewer';
 import { SRGExplorer } from './components/SRGExplorer';
 import { JellybeanHumanCheck } from '../jelly/components/JellybeanHumanCheck';
+import FileHud from './components/FileHud';
 import { ColorId } from '../jelly/types';
 import { VerificationPayload } from '../jelly/types';
 import { interpretSequence, storeLuescherProfile, getLatestLuescherProfile, summarizeProfile } from '../services/luescherService';
@@ -104,6 +105,9 @@ function App() {
   const [isSrgExplorerOpen, setIsSrgExplorerOpen] = useState(false);
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [showJellybeans, setShowJellybeans] = useState(false);
+  const [showFileHud, setShowFileHud] = useState(false);
+  const [pendingLuscherStageIds, setPendingLuscherStageIds] = useState<string[] | null>(null);
+  const [pendingLuscherMessage, setPendingLuscherMessage] = useState<string | null>(null);
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false);
   const [toast, setToast] = useState<{ type: 'info' | 'success' | 'error'; message: string } | null>(null);
   const [diffFiles, setDiffFiles] = useState<{file1: ProjectFile, file2: ProjectFile} | null>(null);
@@ -305,6 +309,21 @@ function App() {
     return () => window.removeEventListener('luscher:refresh-needed', handleRefreshNeeded as EventListener);
   }, []);
 
+  // Listen for explicit workflow Lüscher requirements
+  useEffect(() => {
+    const handleRequire = (e: any) => {
+      const detail = e?.detail || {};
+      const stageIds = detail.stageIds || [];
+      const message = detail.message || null;
+      setPendingLuscherStageIds(stageIds);
+      setPendingLuscherMessage(message);
+      setShowJellybeans(true);
+      showToast('info', 'This workflow requires a Lüscher intake before continuing. Please sort the jelly beans.');
+    };
+    window.addEventListener('luscher:require-workflow', handleRequire as EventListener);
+    return () => window.removeEventListener('luscher:require-workflow', handleRequire as EventListener);
+  }, []);
+
   // On first run, prompt user to do initial jelly bean setup if no profile exists
   useEffect(() => {
     const checkFirstRun = async () => {
@@ -317,13 +336,13 @@ function App() {
           setShowJellybeans(true);
           showToast('info', 'Quick setup: Sort these jelly beans by preference');
         }
-        // Developer/test hook: if URL param jellybeanTest=1, open jellybeans and simulate a verification after a short delay
+        // Developer/test hook: if URL param marbleTest=1, open marbles sorter and simulate a verification after a short delay
         try {
           const params = new URLSearchParams(window.location.search);
-          if (params.get('jellybeanTest') === '1') {
-            console.debug('[Lüscher] jellybeanTest param present — running automated test');
+          if (params.get('marbleTest') === '1') {
+            console.debug('[Lüscher] marbleTest param present — running automated test');
             setShowJellybeans(true);
-            showToast('info', 'Running jellybean onboarding test');
+            showToast('info', 'Running marble onboarding test');
             setTimeout(() => {
               // Simulate a perfect sequence (all colors in a fixed order)
               const seq = [ColorId.BLUE, ColorId.GREEN, ColorId.RED, ColorId.YELLOW, ColorId.VIOLET, ColorId.BROWN, ColorId.BLACK, ColorId.GREY];
@@ -347,14 +366,14 @@ function App() {
 
   // Expose a console helper for debugging in dev mode
   useEffect(() => {
-    if (import.meta.env.DEV) {
-      (window as any).openJellybeanSorter = () => {
-        console.debug('[DEV] openJellybeanSorter called');
+      if (import.meta.env.DEV) {
+      (window as any).openMarbleSorter = () => {
+        console.debug('[DEV] openMarbleSorter called');
         setShowJellybeans(true);
       };
-      console.debug('[DEV] openJellybeanSorter is available on window');
+      console.debug('[DEV] openMarbleSorter is available on window');
     }
-    return () => { if ((window as any).openJellybeanSorter) delete (window as any).openJellybeanSorter; };
+    return () => { if ((window as any).openMarbleSorter) delete (window as any).openMarbleSorter; };
   }, []);
 
   // Log when modal visibility changes (help debug z-index/visibility issues)
@@ -369,6 +388,48 @@ function App() {
         console.log(summarizeProfile(profile));
       }
       await storeLuescherProfile(profile);
+      // If this verification was requested as part of a workflow gate, persist lastLuscher into workflow(s)
+      if (pendingLuscherStageIds && pendingLuscherStageIds.length > 0) {
+        try {
+          // Normalize sequence to color names (e.g., GREY, BLACK)
+          const seqNames = payload.sequence.map(s => {
+            if (typeof s === 'number') {
+              // map numeric Lüscher index to ColorId string
+              try { const { LUSCHER_TO_COLOR } = await import('../services/luescherService'); return LUSCHER_TO_COLOR[s] || String(s); } catch { return String(s); }
+            }
+            return String(s).toUpperCase();
+          });
+          const timing: Record<string, number> = {};
+          const durations = payload.trace?.durations || {};
+          for (const k of Object.keys(durations)) {
+            const keyName = (typeof k === 'number') ? (await import('../services/luescherService')).LUSCHER_TO_COLOR[Number(k)] || String(k) : String(k).toUpperCase();
+            timing[keyName] = durations[k];
+          }
+
+          const luscherResult = {
+            sequence: seqNames,
+            timingMs: timing,
+            takenAt: new Date().toISOString()
+          } as any;
+          // update ai settings for each stage id
+          chat.setAiSettings(prev => {
+            const newSettings = { ...prev };
+            newSettings.workflow = newSettings.workflow.map(stage => pendingLuscherStageIds!.includes(stage.id) ? { ...stage, lastLuscher: luscherResult } : stage);
+            return newSettings;
+          });
+          showToast('success', 'Lüscher intake saved to workflow configuration. Proceeding...');
+          // If we have a pending message, send it now
+          if (pendingLuscherMessage) {
+            const msg = pendingLuscherMessage;
+            setPendingLuscherMessage(null);
+            setPendingLuscherStageIds(null);
+            // slight delay to allow UI update
+            setTimeout(() => chat.sendMessage(msg), 200);
+          }
+        } catch (e) {
+          console.warn('Failed to persist Lüscher result to workflow(s)', e);
+        }
+      }
       showToast('success', 'Preferences updated');
       setShowJellybeans(false);
     } catch (err) {
@@ -431,7 +492,8 @@ function App() {
           onImportFiles={handleImportFiles}
           onImportState={handleImportState}
           onImportChats={handleImportChats}
-          onShowImportHistory={() => setIsImportHistoryOpen(true)}
+          // Repurpose the sidebar "Import History" button to open the Lüscher calibration (jellybean) modal
+          onShowImportHistory={() => setShowJellybeans(true)}
           onDeleteFiles={chat.deleteFiles}
           onCompareFiles={handleCompareFiles}
           onToggleFileContext={chat.toggleProjectFileContext}
@@ -444,6 +506,7 @@ function App() {
           onShowInsights={() => setIsInsightsViewerOpen(true)}
           onShowLogs={() => setIsLogViewerOpen(true)}
           onShowSrgExplorer={() => { setSrgHighlightIds([]); setIsSrgExplorerOpen(true); }}
+          onShowFileHud={() => setShowFileHud(true)}
           onToggleMessageContext={chat.toggleMessageContext}
           onToggleGeneratedFileContext={chat.toggleGeneratedFileContext}
           isGeneratedFileInContext={chat.isGeneratedFileInContext}
@@ -519,12 +582,22 @@ function App() {
       {/* Jellybean sorter modal (Lüscher) */}
       {showJellybeans && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div className="relative z-60 w-full max-w-3xl p-4">
+          <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm" />
+          <div className="relative z-50 w-full max-w-3xl p-4 flex items-center justify-center">
             <JellybeanHumanCheck 
               onVerified={handleVerified} 
               onCancel={() => { setShowJellybeans(false); showToast('info', 'Cancelled'); }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* File HUD */}
+      {showFileHud && (
+        <div className="fixed inset-0 z-60 flex items-start justify-center p-6">
+          <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm" />
+          <div className="relative z-50 w-full max-w-4xl p-4">
+            <FileHud onClose={() => setShowFileHud(false)} />
           </div>
         </div>
       )}

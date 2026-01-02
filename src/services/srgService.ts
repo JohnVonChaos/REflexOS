@@ -227,6 +227,36 @@ class SRGService {
     return this.graph;
   }
 
+    /**
+     * Produce a compact view of the SRG for a single stage call. This returns an id,
+     * a textual payload that can be embedded in a prompt, and a small summary trace.
+     */
+    public async getSrgView(opts: { stageId: string; taskType: string; textContext: string; priorJudgment?: any; activeModules?: any[] }) {
+        const { stageId, taskType, textContext } = opts;
+        // Use the trace function to get candidate nodes
+        const traceMap = this.trace(textContext || '', undefined);
+        // Build a simple payload: top words from the trace
+        const words: string[] = [];
+        for (const arr of traceMap.values()) {
+            for (const p of arr) {
+                if (words.length >= 40) break;
+                if (!words.includes(p.word)) words.push(p.word);
+            }
+            if (words.length >= 40) break;
+        }
+
+        const payload = (words.join(' ') || String(textContext || '')).trim();
+        const view = {
+            id: `view-${Date.now()}`,
+            stageId,
+            taskType,
+            payload,
+            trace: Object.fromEntries(traceMap.entries()),
+        } as any;
+
+        return view;
+    }
+
   public async reinforceLinksFromText(text: string): Promise<void> {
       await this.processTextForGraph(text, true);
   }

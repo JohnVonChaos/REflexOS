@@ -88,3 +88,6 @@ export async function importEntries(entries: ChatImportEntry[]) {
 
   return createdAtoms;
 }
+
+// Re-export parseImportFile from the src version so tests and UI can import from either path
+export { parseImportFile } from '../src/services/chatImportService';

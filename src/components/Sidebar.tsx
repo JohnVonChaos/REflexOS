@@ -3,7 +3,7 @@
 import React, { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ProjectFile, MemoryAtom, GeneratedFile, BackgroundInsight } from '../types';
-import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon } from './icons';
+import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon, ScalesIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
 import { speechService } from '../services/speechService';
 import { InsightDisplay } from './InsightDisplay';
@@ -147,6 +147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onExportAll,
     onExportState,
     onImportChats,
+    onShowImportHistory,
     onCompareFiles,
     onDeleteFiles,
     onToggleFileContext,
@@ -156,7 +157,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onShowAxioms,
     onShowInsights,
     onShowLogs,
-    onShowSrgExplorer,
+     onShowAxioms,
+     onShowFileHud,
     onToggleMessageContext,
     onToggleGeneratedFileContext,
     isGeneratedFileInContext,
@@ -226,14 +228,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <NetworkIcon />
                     </button>
-                    {/* Import History button */}
+                    {/* Calibration / Jellybean test button (replaces Import History) */}
                     {onShowImportHistory && (
                         <button
                             onClick={onShowImportHistory}
-                            title="Show Import History"
+                            title="Calibration"
+                            aria-label="Calibration"
                             className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
                         >
-                            <HistoryIcon />
+                            <ScalesIcon />
+                        </button>
+                    )}
+                    {onShowFileHud && (
+                        <button
+                            onClick={onShowFileHud}
+                            title="File HUD"
+                            aria-label="File HUD"
+                            className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                        >
+                            <FileIcon />
                         </button>
                     )}
                     {/* Import Chats button in header, next to SRG Explorer */}

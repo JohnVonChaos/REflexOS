@@ -2,6 +2,7 @@ import { backgroundCognitionService } from './backgroundCognitionService';
 import { memoryService } from './memoryService';
 import { loggingService } from './loggingService';
 import { getLatestLuescherProfile, shouldRefreshProfile } from './luescherService';
+import { sessionService } from './sessionService';
 
 type OrchestratorOptions = { intervalMs?: number; idleMs?: number };
 
@@ -9,6 +10,7 @@ class BackgroundOrchestrator {
   private intervalId: any = null;
   private options: OrchestratorOptions;
   private running = false;
+  private lastRunByStage: Map<string, number> = new Map();
 
   constructor(opts?: OrchestratorOptions) {
     this.options = { intervalMs: 5000, idleMs: 30000, ...(opts || {}) };
@@ -29,6 +31,18 @@ class BackgroundOrchestrator {
 
   async cycle() {
     try {
+      // Orchestrator notes:
+      // - Scheduled per-stage background cycles respect a per-stage
+      //   `backgroundRunMode` setting. Default is 'chained' which executes
+      //   Subconscious -> Conscious -> Synthesis in order. If a stage sets
+      //   `backgroundRunMode: 'independent'` the orchestrator will run only
+      //   the synthesis cycle for that stage (useful for lightweight recurring
+      //   maintenance tasks).
+
+      // - Idle-mode cycles also run the chained cycle by default so that
+      //   background cognition follows the same internal ordering as active
+      //   pipeline executions.
+
       // Check Lüscher profile freshness and emit refresh-needed event if appropriate
       try {
         const profile = await getLatestLuescherProfile();
@@ -50,16 +64,49 @@ class BackgroundOrchestrator {
       const now = Date.now();
       const idle = !lastUser || (now - (lastUser.timestamp || 0) > (this.options.idleMs || 30000));
 
-      if (!idle) return;
+      // If not idle, still run per-workflow scheduled background cycles
+      try {
+        const session = await sessionService.loadSession();
+        const workflow = session?.aiSettings?.workflow || [];
+        for (const stage of workflow) {
+          const minutes = stage.backgroundIntervalMinutes;
+          if (!minutes || minutes <= 0) continue;
+          const last = this.lastRunByStage.get(stage.id) || 0;
+          const intervalMs = minutes * 60 * 1000;
+          if (now - last >= intervalMs) {
+            loggingService.log('INFO', `Orchestrator: running scheduled background cycle for stage ${stage.name}`, { stageId: stage.id, minutes });
+            try {
+              // Run chained subconscious -> conscious -> synthesis cycle for the scheduled stage
+              const roleSetting = { enabled: true, provider: stage.provider as any, selectedModel: stage.selectedModel };
+              const session = await sessionService.loadSession();
+              const providers = session?.aiSettings?.providers;
+              // Respect per-stage run mode: 'independent' runs only synthesis, otherwise run the chained cycle
+              const runMode = (stage as any).backgroundRunMode || 'chained';
+              if (runMode === 'independent') {
+                await backgroundCognitionService.runSynthesisCycle(all, Math.floor(Date.now()/1000));
+              } else {
+                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now()/1000), roleSetting as any, providers as any);
+              }
+            } catch (e) {
+              loggingService.log('ERROR', `Scheduled background cycle for stage ${stage.id} failed`, { error: e });
+            }
+            this.lastRunByStage.set(stage.id, now);
+          }
+        }
+      } catch (e) {
+        loggingService.log('DEBUG', 'Failed to run per-workflow scheduled background cycles', { error: e });
+      }
 
+      // If idle, run the default randomized background cycle as before
+      if (!idle) return;
       // Weighted selection: research (30%), synthesis (50%), reflection (20%)
       const r = Math.random();
       if (r < 0.3) {
         loggingService.log('INFO', 'Orchestrator: running web search cycle (research).');
         await backgroundCognitionService.runWebSearchCycle({ messages: all, projectFiles: [], contextFileNames: [], selfNarrative: '', rcb: undefined }, { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' }, ({} as any));
       } else if (r < 0.8) {
-        loggingService.log('INFO', 'Orchestrator: running synthesis cycle.');
-        await backgroundCognitionService.runSynthesisCycle(all, Math.floor(Date.now()/1000));
+        loggingService.log('INFO', 'Orchestrator: running chained synthesis cycle.');
+        await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now()/1000));
       } else {
         loggingService.log('INFO', 'Orchestrator: running reflection cycle.');
         await backgroundCognitionService.runReflectionCycle(all, Math.floor(Date.now()/1000));

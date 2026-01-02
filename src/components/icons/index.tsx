@@ -235,3 +235,10 @@ export const HistoryIcon: React.FC = () => (
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
 );
+
+export const ScalesIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        {/* Simple balance scales / calibration icon */}
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v4M4 7h16M7.5 11.5c0 2 2 3.5 4.5 3.5s4.5-1.5 4.5-3.5M7 7l2 4M17 7l-2 4M6 20c2-3 6-3 6 0m6 0c0-3-4-3-6 0" />
+    </svg>
+);

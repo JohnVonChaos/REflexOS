@@ -419,7 +419,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 lastTurnAtoms,
                 currentRcb,
                 consciousRole,
-                aiSettingsRef.current.providers
+                aiSettingsRef.current.providers,
+                aiSettingsRef.current
             );
             setRcb(newRcb);
             loggingService.log('INFO', 'RCB updated successfully.', { newRcb });
@@ -432,6 +433,35 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     // --- Core Chat Logic (Workflow-Driven) ---
     const sendMessage = useCallback(async (messageText: string) => {
         loggingService.log('INFO', 'sendMessage triggered', { messageText });
+            // Pre-conversation Lüscher gate: ensure any workflows requiring Lüscher intake have a recent lastLuscher
+            try {
+                const workflow = aiSettingsRef.current.workflow || [];
+                const needing = workflow.filter(s => s.useLuscherIntake).filter(s => {
+                    if (!s.lastLuscher) return true;
+                    try {
+                        const taken = Date.parse(s.lastLuscher.takenAt);
+                        const ageMs = Date.now() - taken;
+                        return ageMs > 24 * 60 * 60 * 1000; // older than 24h
+                    } catch (e) {
+                        return true;
+                    }
+                }).map(s => s.id);
+                if (needing.length > 0) {
+                    loggingService.log('INFO', 'Lüscher intake required before this workflow can proceed.', { needing });
+                    const detail = { stageIds: needing, message: messageText };
+                    const evt = (typeof (globalThis as any).CustomEvent === 'function') ? new (globalThis as any).CustomEvent('luscher:require-workflow', { detail }) : { type: 'luscher:require-workflow', detail };
+                    if (typeof (globalThis as any).dispatchEvent === 'function') {
+                        (globalThis as any).dispatchEvent(evt);
+                    }
+                    // stop processing until user completes intake
+                    setIsLoading(false);
+                    setLoadingStage('');
+                    return;
+                }
+            } catch (e) {
+                // ignore gating errors and continue
+                loggingService.log('WARN', 'Lüscher gating check failed, continuing.', { error: e });
+            }
         setIsLoading(true);
         setLoadingStage('Initializing...');
         setError(null);
@@ -590,6 +620,32 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             stagePrompt += `\n\n--- ${CONTEXT_PACKET_LABELS[input as keyof typeof CONTEXT_PACKET_LABELS]} ---\n${content}`;
                         }
                     }
+
+                // If RCB contains a Lüscher profile, prepend a clear Lüscher block and explicit instruction
+                try {
+                    const rcb = rcbRef.current as any;
+                    if (rcb && rcb.emotional_state && rcb.emotional_state.luscher) {
+                        const luscher = rcb.emotional_state.luscher;
+                        const luscherBlock = `\n\n--- LUSCHER_PROFILE ---\n${JSON.stringify(luscher, null, 2)}\n--- LUSCHER_PROFILE_END ---\n\n`;
+                        const instruction = `NOTE: The above is a Lüscher personality preference profile (color *preferences*). This is NOT a color-vision/diagnostic test. Use this profile to adjust emotional tone and provide a one-line emotional summary (emotional_state_summary). Do not offer color vision diagnostics.`;
+                        stagePrompt = luscherBlock + instruction + '\n\n' + stagePrompt;
+                        loggingService.log('DEBUG', 'Injected Lüscher profile into stage prompt', { stage: stage.id, summary: (luscher.summary || luscher.sequence) });
+                    }
+                } catch (e) {
+                    loggingService.log('DEBUG', 'Failed to inject Lüscher block into prompt', { error: e });
+                }
+
+                // If this stage has a persisted Lüscher intake, inject it directly into the stage prompt
+                if ((stage as any).lastLuscher) {
+                    try {
+                        const ll = (stage as any).lastLuscher;
+                        const luscherJson = JSON.stringify(ll, null, 2);
+                        const luscherSummary = `Sequence: ${(ll.sequence || []).slice(0,2).join(', ')} (taken at ${ll.takenAt})`;
+                        stagePrompt += `\n\n--- LUSCHER_PROFILE ---\n${luscherJson}\n--- LUSCHER_SUMMARY ---\n${luscherSummary}`;
+                    } catch (e) {
+                        loggingService.log('DEBUG', 'Failed to append stage.lastLuscher to prompt', { error: e });
+                    }
+                }
                 
                 const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
                 
