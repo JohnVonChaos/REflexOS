@@ -26,6 +26,8 @@ interface SidebarProps {
   onShowInsights: () => void;
   onShowLogs: () => void;
   onShowSrgExplorer: () => void;
+    onShowFileHud?: () => void;
+    onShowBackgroundCognition?: () => void;
   onShowKnowledgeModules: () => void;
   onShowImportHistory?: () => void;
   onToggleMessageContext: (uuid: string) => void;

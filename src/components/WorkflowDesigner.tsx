@@ -80,18 +80,18 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
     const [localSettings, setLocalSettings] = useState<AISettings>(settings);
     const [expandedStage, setExpandedStage] = useState<string | null>(null);
 
-    const handleStageChange = <K extends keyof WorkflowStage>(stageId: string, field: K, value: WorkflowStage[K]) => {
+    const handleStageChange = (stageId: string, field: string, value: any) => {
         setLocalSettings(prev => ({
             ...prev,
             workflow: prev.workflow.map(stage => {
                 if (stage.id === stageId) {
-                    const updatedStage = { ...stage, [field]: value };
+                    const updatedStage: any = { ...stage, [field]: value };
                     if (field === 'provider') {
                         const newProvider = value as AIProvider;
                         const availableModels = prev.providers[newProvider].identifiers.split('\n').map(m => m.trim()).filter(Boolean);
                         updatedStage.selectedModel = availableModels[0] || '';
                     }
-                    return updatedStage;
+                    return updatedStage as WorkflowStage;
                 }
                 return stage;
             })
@@ -144,7 +144,7 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
             selectedModel: settings.providers.gemini.identifiers.split('\n')[0] || 'gemini-2.5-flash',
             systemPrompt: 'You are a helpful AI assistant.',
             inputs: ['USER_QUERY'],
-            backgroundRunMode: 'chained'
+            // Background scheduling is configured separately in the Background Cognition panel
         };
         setLocalSettings(prev => {
             const newWorkflow = [...prev.workflow];
@@ -220,13 +220,7 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
                                             {localSettings.providers[stage.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => <option key={model} value={model}>{model}</option>)}
                                         </select>
                                     </div>
-                                    <div className={`mt-3 grid grid-cols-2 gap-3 transition-opacity ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
-                                        <label className="text-xs text-gray-400">Background Run Mode</label>
-                                        <select value={(stage as any).backgroundRunMode || 'chained'} onChange={e => handleStageChange(stage.id, 'backgroundRunMode' as any, e.target.value as any)} className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none">
-                                            <option value="chained">Chained (Subconscious → Conscious → Synthesis)</option>
-                                            <option value="independent">Independent (Synthesis only)</option>
-                                        </select>
-                                    </div>
+                                    {/* Background scheduling and run modes moved to the Background Cognition panel */}
                                      <div className={`mt-3 ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <textarea 
                                             value={stage.systemPrompt}

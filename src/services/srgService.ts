@@ -261,6 +261,16 @@ class SRGService {
       await this.processTextForGraph(text, true);
   }
 
+    /**
+     * Lightweight hybrid ingestion shim for compatibility with other code paths.
+     * In the full SRG implementation this would add tokens to the hybrid corpus;
+     * here we fall back to reinforcing links so axioms still affect the graph.
+     */
+    public async ingestHybrid(text: string, _metadata?: any): Promise<void> {
+        // Fallback to reinforcing graph links for now
+        await this.reinforceLinksFromText(text);
+    }
+
   private calculateEffectiveWeight(link: GraphLink, config: SRGTraversalConfig, now: number, customScorer?: (link: GraphLink, depth: number, targetId: string) => number, depth: number = 0): number {
       if (config.algorithm === 'custom' && customScorer) {
           try {

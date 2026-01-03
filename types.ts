@@ -74,7 +74,6 @@ export interface MemoryAtom {
   evictedAt?: number;
   evictionReason?: string;
   lastActivationScore?: number; // normalized 0..1
-  lastActivatedTurn?: number;   // turn number when last activated (already used in code in some places)
   intrinsicValue?: number;      // computed once, persists (0..1)
 
   // --- NEW: Resurfacing (Phase 2) ---
@@ -277,6 +276,21 @@ export const COGNITIVE_ROLE_LABELS: Record<CognitiveRole, string> = {
     context: "Context Orbit Management"
 };
 export interface RoleSetting { enabled: boolean; provider: AIProvider; selectedModel: string; }
+
+// Convenience helper: derive reasonable default inputs for a stage based on its id
+export const getDefaultStageInputs = (stageId: string): ContextPacketType[] => {
+  const id = String(stageId).toLowerCase();
+  if (id.includes('subconscious')) {
+    return ['USER_QUERY', 'RECENT_HISTORY', 'CONTEXT_FILES', 'RCB'] as ContextPacketType[];
+  }
+  if (id.includes('conscious')) {
+    return ['OUTPUT_OF_subconscious_default' as ContextPacketType, 'USER_QUERY', 'RECALLED_AXIOMS' as ContextPacketType];
+  }
+  if (id.includes('synthesis')) {
+    return ['CORE_NARRATIVE' as ContextPacketType, 'OUTPUT_OF_conscious_default' as ContextPacketType, 'CONTEXT_FILES', 'USER_QUERY'] as ContextPacketType[];
+  }
+  return ['USER_QUERY', 'CONTEXT_FILES'] as ContextPacketType[];
+};
 
 
 export const getDefaultSettings = (): AISettings => {

@@ -22,7 +22,7 @@ class BackgroundCognitionService {
    * @param providers All available provider settings.
    * @returns A BackgroundInsight object or null.
    */
-  async runWebSearchCycle(context: FullCognitionContext, roleSetting: RoleSetting, providers: AISettings['providers']): Promise<BackgroundInsight | null> {
+  async runWebSearchCycle(context: FullCognitionContext, roleSetting: RoleSetting, providers: AISettings['providers'], workspaceMode: 'observe' | 'write' | 'full' = 'observe'): Promise<BackgroundInsight | null> {
     const { messages, selfNarrative, projectFiles, contextFileNames, rcb } = context;
     if (messages.length < 2 && projectFiles.length === 0) { // Need some context to work with
       loggingService.log('DEBUG', 'Skipping background cognition: not enough context.');
@@ -118,6 +118,36 @@ ${selfNarrative || 'None'}
       if (!searchResult || !searchResult.text || searchResult.text.trim() === '') {
         loggingService.log('WARN', 'Background cognition: Search returned no results.');
         return null;
+      }
+
+      // Workspace integration: write research notes and stage/commit depending on mode
+      try {
+        if (workspaceMode === 'write' || workspaceMode === 'full') {
+          const { workspace } = await import('./workspaceManager');
+          const timestamp = Date.now();
+          const researchPath = `reflex://notes/research_${timestamp}.md`;
+          const insightText = searchResult.text;
+
+          // Persist canonical file
+          await workspace.fsSave(researchPath, `# Research: ${query}\n\n${insightText}`);
+
+          // Stage the change
+          await workspace.staging.writeFile(researchPath, `# Research: ${query}\n\n${insightText}`);
+
+          // Auto-commit if in full mode
+          if (workspaceMode === 'full') {
+            await workspace.staging.commit(`Background research: ${query}`, 'background-cognition');
+          }
+
+          // Update cognitive state
+          const statePath = 'reflex://system/cognitive_state.json';
+          const currentStateRes = await workspace.fsOpen(statePath);
+          const currentState = currentStateRes.file ? JSON.parse(currentStateRes.file.content) : {};
+          currentState.lastResearch = { query, timestamp, path: researchPath };
+          await workspace.fsSave(statePath, JSON.stringify(currentState, null, 2));
+        }
+      } catch (e) {
+        loggingService.log('WARN', 'Background cognition: Workspace integration failed.', { error: e });
       }
 
       return {

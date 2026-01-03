@@ -12,6 +12,7 @@ import { backgroundOrchestrator } from '../services/backgroundOrchestrator';
 import { rcbService, calculateRcbSize } from '../services/rcbService';
 import { extractCodeBlocksFromText } from '../services/codeBlockParser';
 import { loggingService } from '../services/loggingService';
+import { indexAxiomsToSRG } from '../services/axiomIndexing';
 import { Content, FunctionCall } from '@google/genai';
 
 // Helper function to map 1-10 strength to a number of turns based on Fibonacci.
@@ -256,7 +257,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 contextFileNames: contextFileNamesForCycle,
                 selfNarrative: selfNarrativeRef.current,
                 rcb: rcbRef.current,
-            }, backgroundRoleSetting, currentSettings.providers);
+            }, backgroundRoleSetting, currentSettings.providers, currentSettings.backgroundWorkspaceMode || 'observe');
 
             if (insight) {
                 const persisted = await memoryService.createAtom({
@@ -343,27 +344,49 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         const axiomGenerationOutput = workflowOutputs['axiom_generation_default'];
         if (axiomGenerationOutput) {
             try {
-                const jsonString = axiomGenerationOutput.match(/```json\n([\s\S]*?)\n```/)?.[1];
-                if (jsonString) {
-                    const parsed = JSON.parse(jsonString);
-                    if (parsed.axioms && Array.isArray(parsed.axioms)) {
-                        for (const axiomData of parsed.axioms) {
-                            if (axiomData.text && axiomData.id) {
-                                newAxiomsForNarrative.push(axiomData.text);
-                                const created = await memoryService.createAtom({
-                                    role: 'model', type: 'axiom', text: axiomData.text, axiomId: axiomData.id,
-                                    isInContext: false, isCollapsed: false, activationScore: 1.0, lastActivatedAt: Date.now(), lastActivatedTurn: currentTurnRef.current
-                                });
-                                newAxiomAtoms.push(created);
-                            }
+                // Strip surrounding markdown code fences if present (```json ... ``` or ```) before attempting JSON.parse
+                let candidate = String(axiomGenerationOutput);
+                candidate = candidate.replace(/^```(?:json)?\s*/im, '').replace(/\s*```$/im, '').trim();
+
+                let parsed: any = null;
+                try {
+                    parsed = JSON.parse(candidate);
+                } catch (inner) {
+                    // Fallback: try to capture a fenced json block explicitly
+                    const jsonString = axiomGenerationOutput.match(/```json\n([\s\S]*?)\n```/)?.[1] || candidate;
+                    parsed = JSON.parse(jsonString);
+                }
+
+                // Support two shapes: { axioms: [...] } and a top-level array of axioms
+                const parsedAxioms: any[] = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.axioms) ? parsed.axioms : []);
+
+                if (parsedAxioms.length > 0) {
+                    for (const axiomData of parsedAxioms) {
+                        if (axiomData && axiomData.text && axiomData.id) {
+                            newAxiomsForNarrative.push(axiomData.text);
+                            const created = await memoryService.createAtom({
+                                role: 'model', type: 'axiom', text: axiomData.text, axiomId: axiomData.id,
+                                isInContext: false, isCollapsed: false, activationScore: 1.0, lastActivatedAt: Date.now(), lastActivatedTurn: currentTurnRef.current
+                            });
+                            newAxiomAtoms.push(created);
                         }
                     }
                 }
+
                 if (newAxiomAtoms.length > 0) {
                      loggingService.log('INFO', 'Parsed emergent axioms from Axiom Generation stage.', { axioms: newAxiomAtoms });
+
+                     // Index into SRG so axioms become queryable/recallable
+                     loggingService.log('INFO', 'Indexing axioms to SRG', { count: newAxiomAtoms.length });
+                     try {
+                         await indexAxiomsToSRG(newAxiomAtoms);
+                         loggingService.log('INFO', 'Axioms indexed to SRG successfully.', { count: newAxiomAtoms.length });
+                     } catch (e) {
+                         loggingService.log('ERROR', 'Failed to index parsed axioms to SRG', { error: e?.toString ? e.toString() : e });
+                     }
                 }
-            } catch(e) {
-                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: e, output: axiomGenerationOutput });
+            } catch(e: any) {
+                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: e?.toString ? e.toString() : e, stack: e?.stack, output: axiomGenerationOutput });
             }
         }
         
@@ -648,6 +671,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 }
                 
                 const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
+                // Generate autonomous stage output
+                let stageOutput = '';
+                try {
+                    stageOutput = await generateText(stagePrompt, stage.systemPrompt, roleSetting, aiSettingsRef.current.providers);
+                } catch (e) {
+                    loggingService.log('ERROR', `Failed to generate autonomous output for ${stage.name}`, { error: e?.toString ? e.toString() : e, stack: e?.stack });
+                    throw e;
+                }
                 
                 // If it's the main synthesis stage, stream the response
                 if (stage.id === 'synthesis_default') {
@@ -681,9 +712,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     const stageOutput = await generateText(stagePrompt, stage.systemPrompt, roleSetting, aiSettingsRef.current.providers);
                     workflowOutputs[stage.id] = stageOutput;
                     if (stage.id !== 'axiom_generation_default') { // Don't add axiom agent output to trace
-                        cognitiveTrace.push({ uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'conscious_thought', text: stageOutput, isInContext: false, isCollapsed: false, activationScore: 0, lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name } as any);
+                        const traceType: MemoryAtom['type'] = stage.id && stage.id.toLowerCase().includes('subconscious') ? 'subconscious_reflection' : (stage.id && stage.id.toLowerCase().includes('conscious') ? 'conscious_thought' : 'steward_note');
+                        cognitiveTrace.push({ uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: traceType, text: stageOutput, isInContext: false, isCollapsed: false, activationScore: 0, lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name } as any);
                     }
-                    loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: stageOutput.substring(0, 100) + '...' });
+                    loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: (stageOutput || '').substring(0, 100) + '...' });
                 }
             }
 

@@ -3,7 +3,7 @@
 import React, { useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { ProjectFile, MemoryAtom, GeneratedFile, BackgroundInsight } from '../types';
-import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon, ScalesIcon } from './icons';
+import { FileIcon, UploadIcon, DownloadIcon, CompareIcon, TrashIcon, BookIcon, ExpandIcon, CollapseIcon, SaveIcon, CrystalIcon, GlobeIcon, SpeakerIcon, FolderIcon, FolderOpenIcon, DocumentTextIcon, NetworkIcon, HistoryIcon, ScalesIcon, BrainIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
 import { speechService } from '../services/speechService';
 import { InsightDisplay } from './InsightDisplay';
@@ -30,6 +30,8 @@ interface SidebarProps {
   onShowInsights: () => void;
   onShowLogs: () => void;
   onShowSrgExplorer: () => void;
+    onShowFileHud?: () => void;
+    onShowBackgroundCognition?: () => void;
   onToggleMessageContext: (uuid: string) => void;
   onToggleGeneratedFileContext: (fileName: string) => void;
   isGeneratedFileInContext: (fileName: string) => boolean;
@@ -161,6 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
      onShowFileHud,
     onToggleMessageContext,
     onToggleGeneratedFileContext,
+     onShowBackgroundCognition,
     isGeneratedFileInContext,
 }) => {
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
@@ -249,6 +252,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <FileIcon />
                         </button>
                     )}
+                    {onShowBackgroundCognition && (
+                        <button
+                            onClick={onShowBackgroundCognition}
+                            title="Background Cognition"
+                            aria-label="Background Cognition"
+                            className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                        >
+                            <BrainIcon />
+                        </button>
+                    )}
                     {/* Import Chats button in header, next to SRG Explorer */}
                     {onImportChats && (
                         <button
@@ -319,6 +332,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div className="border-b border-gray-700/50 p-2">
                     <h3 className="p-1 text-sm font-semibold text-gray-300">Cognitive Artifacts</h3>
                     <div className="space-y-2 p-1">
+                            <button onClick={onShowBackgroundCognition} className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">
+                                <BrainIcon /> Background Cognition
+                            </button>
+                        
                         <button onClick={onShowAxioms} className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors">
                             <BookIcon /> View Axioms ({axioms.length})
                         </button>

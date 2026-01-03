@@ -93,10 +93,11 @@ class ContextService {
     prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toString());
     
     try {
-        const responseJson = await generateText(prompt, '', roleSetting, providers);
-        
-        // Safely parse the response
-        const parsedResponse = JSON.parse(responseJson.trim().replace(/```json|```/g, ''));
+    const responseJson = await generateText(prompt, '', roleSetting, providers);
+
+    // Strip possible code fences and parse safely
+    const cleaned = String(responseJson).replace(/^```(?:json)?\s*/im, '').replace(/\s*```$/im, '').trim();
+    const parsedResponse = JSON.parse(cleaned);
 
         if (parsedResponse.setOrbits && Array.isArray(parsedResponse.setOrbits)) {
             result.setOrbits = parsedResponse.setOrbits.filter(
@@ -114,8 +115,8 @@ class ContextService {
         loggingService.log('INFO', 'Context orbit management successful.', { result });
         return result;
 
-    } catch(e) {
-        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: e });
+    } catch(e: any) {
+        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: e?.toString ? e.toString() : e, stack: e?.stack, rawResponse: typeof e === 'string' ? e : undefined });
         // Fallback: Give all new items a default medium orbit if AI fails
         result.setOrbits = newArtifacts.map(a => ({ uuid: a.uuid, strength: 5 }));
         return result;

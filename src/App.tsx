@@ -15,9 +15,10 @@ import { LogViewer } from './components/LogViewer';
 import { SRGExplorer } from './components/SRGExplorer';
 import { JellybeanHumanCheck } from '../jelly/components/JellybeanHumanCheck';
 import FileHud from './components/FileHud';
+import BackgroundCognitionPanel from './components/BackgroundCognitionPanel';
 import { ColorId } from '../jelly/types';
 import { VerificationPayload } from '../jelly/types';
-import { interpretSequence, storeLuescherProfile, getLatestLuescherProfile, summarizeProfile } from '../services/luescherService';
+import { interpretSequence, storeLuescherProfile, getLatestLuescherProfile, summarizeProfile, LUSCHER_TO_COLOR } from '../services/luescherService';
 import { srgService } from './services/srgService';
 import { srgDataset } from './services/srgDataset';
 
@@ -106,6 +107,7 @@ function App() {
   const [srgHighlightIds, setSrgHighlightIds] = useState<string[]>([]); // State for highlighted nodes
   const [showJellybeans, setShowJellybeans] = useState(false);
   const [showFileHud, setShowFileHud] = useState(false);
+  const [isBackgroundPanelOpen, setIsBackgroundPanelOpen] = useState(false);
   const [pendingLuscherStageIds, setPendingLuscherStageIds] = useState<string[] | null>(null);
   const [pendingLuscherMessage, setPendingLuscherMessage] = useState<string | null>(null);
   const [isImportHistoryOpen, setIsImportHistoryOpen] = useState(false);
@@ -389,20 +391,20 @@ function App() {
       }
       await storeLuescherProfile(profile);
       // If this verification was requested as part of a workflow gate, persist lastLuscher into workflow(s)
-      if (pendingLuscherStageIds && pendingLuscherStageIds.length > 0) {
+          if (pendingLuscherStageIds && pendingLuscherStageIds.length > 0) {
         try {
           // Normalize sequence to color names (e.g., GREY, BLACK)
           const seqNames = payload.sequence.map(s => {
             if (typeof s === 'number') {
               // map numeric Lüscher index to ColorId string
-              try { const { LUSCHER_TO_COLOR } = await import('../services/luescherService'); return LUSCHER_TO_COLOR[s] || String(s); } catch { return String(s); }
+              return LUSCHER_TO_COLOR[s] || String(s);
             }
             return String(s).toUpperCase();
           });
           const timing: Record<string, number> = {};
           const durations = payload.trace?.durations || {};
           for (const k of Object.keys(durations)) {
-            const keyName = (typeof k === 'number') ? (await import('../services/luescherService')).LUSCHER_TO_COLOR[Number(k)] || String(k) : String(k).toUpperCase();
+            const keyName = (typeof k === 'number') ? (LUSCHER_TO_COLOR[Number(k)] || String(k)) : String(k).toUpperCase();
             timing[keyName] = durations[k];
           }
 
@@ -507,6 +509,7 @@ function App() {
           onShowLogs={() => setIsLogViewerOpen(true)}
           onShowSrgExplorer={() => { setSrgHighlightIds([]); setIsSrgExplorerOpen(true); }}
           onShowFileHud={() => setShowFileHud(true)}
+          onShowBackgroundCognition={() => setIsBackgroundPanelOpen(true)}
           onToggleMessageContext={chat.toggleMessageContext}
           onToggleGeneratedFileContext={chat.toggleGeneratedFileContext}
           isGeneratedFileInContext={chat.isGeneratedFileInContext}
@@ -600,6 +603,17 @@ function App() {
             <FileHud onClose={() => setShowFileHud(false)} />
           </div>
         </div>
+      )}
+
+      {isBackgroundPanelOpen && (
+        <BackgroundCognitionPanel
+          isOpen={isBackgroundPanelOpen}
+          onClose={() => setIsBackgroundPanelOpen(false)}
+          settings={chat.aiSettings}
+          setSettings={chat.setAiSettings}
+          isCognitionRunning={chat.isCognitionRunning}
+          onRunCognitionNow={() => chat.runCognitionCycleNow(true)}
+        />
       )}
 
       {/* Simple toast */}

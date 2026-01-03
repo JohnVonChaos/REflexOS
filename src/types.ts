@@ -178,6 +178,14 @@ export interface WorkflowStage {
     selectedModel: string;
     systemPrompt: string;
     inputs: ContextPacketType[];
+  // Optional extensions for autonomous/background behavior
+  enableWebSearch?: boolean;
+  enableTimedCycle?: boolean;
+  timerSeconds?: number;
+  useLuscherIntake?: boolean;
+  lastLuscher?: any;
+  backgroundIntervalMinutes?: number | null;
+  backgroundRunMode?: 'chained' | 'independent';
 }
 
 // --- SRG Engine Configuration Types ---
@@ -220,11 +228,33 @@ export interface AISettings {
   workflow: WorkflowStage[];
   roles: Record<CognitiveRole, RoleSetting>;
   backgroundCognitionRate: number;
+  backgroundWorkspaceMode?: 'observe' | 'write' | 'full';
   debugSRG: boolean;
   apiTokenLimit: number;
+  apiTokenLimitMin: number;
   passFullCognitiveTrace: boolean;
   srg: SRGSettings; // SRG Engine settings
 }
+
+export interface WorkspaceActivity {
+  action: string;
+  path: string;
+  timestamp: number;
+}
+
+export const getDefaultStageInputs = (stageId: string): ContextPacketType[] => {
+  const id = String(stageId).toLowerCase();
+  if (id.includes('subconscious')) {
+    return ['USER_QUERY', 'RECENT_HISTORY', 'CONTEXT_FILES', 'RCB'] as ContextPacketType[];
+  }
+  if (id.includes('conscious')) {
+    return ['OUTPUT_OF_subconscious_default' as ContextPacketType, 'USER_QUERY', 'RECALLED_AXIOMS' as ContextPacketType];
+  }
+  if (id.includes('synthesis')) {
+    return ['CORE_NARRATIVE' as ContextPacketType, 'OUTPUT_OF_conscious_default' as ContextPacketType, 'CONTEXT_FILES', 'USER_QUERY'] as ContextPacketType[];
+  }
+  return ['USER_QUERY', 'CONTEXT_FILES'] as ContextPacketType[];
+};
 
 // --- Types for background agents ---
 export type CognitiveRole = 'conscious' | 'subconscious' | 'synthesis' | 'arbiter' | 'background' | 'narrative' | 'context';
@@ -330,6 +360,7 @@ Example:
         backgroundCognitionRate: 360,
         debugSRG: false,
         apiTokenLimit: 1048576,
+        apiTokenLimitMin: 32000,
         passFullCognitiveTrace: true,
         srg: {
             traversal: {

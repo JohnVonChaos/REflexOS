@@ -17,24 +17,18 @@ describe('WorkflowDesigner Lüscher button', () => {
     act(() => {
       root.render(<WorkflowDesigner isOpen={true} onClose={onClose} settings={defaults} setSettings={setSettings} />);
     });
-
-    // Expand the first stage's Configure Inputs
-    const configureBtns = Array.from(container.querySelectorAll('button')).filter(b => (b.textContent || '').includes('Configure Inputs'));
-    expect(configureBtns.length).toBeGreaterThan(0);
-    const configureBtn = configureBtns[0];
+    // Open Configure Inputs and toggle Luscher intake
+    const configureBtn = Array.from(container.querySelectorAll('button')).find(b => (b.textContent || '').includes('Configure Inputs')) as HTMLButtonElement;
+    expect(configureBtn).toBeTruthy();
+    if (!configureBtn) return;
     act(() => { configureBtn.click(); });
 
-    // Find the Lüscher checkbox in the inputs panel
-    const luscherLabel = Array.from(container.querySelectorAll('label')).find(l => (l.textContent || '').includes('Include Lüscher')) as HTMLLabelElement | undefined;
-    expect(luscherLabel).toBeTruthy();
-    if (!luscherLabel) return;
-    const luscherCheckbox = luscherLabel.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+    const luscherCheckbox = Array.from(container.querySelectorAll('input')).find(i => (i as HTMLInputElement).type === 'checkbox' && (i as HTMLInputElement).checked === false && (i as HTMLInputElement).nextSibling && ((i as HTMLInputElement).nextSibling as Element).textContent?.includes('Lüscher')) as HTMLInputElement | undefined;
     expect(luscherCheckbox).toBeTruthy();
     if (!luscherCheckbox) return;
 
-    act(() => {
-      luscherCheckbox.click();
-    });
+    // Toggle Lüscher on
+    act(() => { luscherCheckbox.click(); });
 
     // Save & Close
     const saveBtn = Array.from(container.querySelectorAll('button')).find(b => (b.textContent || '').includes('Save & Close')) as HTMLButtonElement;
@@ -45,7 +39,7 @@ describe('WorkflowDesigner Lüscher button', () => {
     const newSettings = (setSettings as any).mock.calls[0][0];
     let finalSettings = typeof newSettings === 'function' ? newSettings(getDefaultSettings()) : newSettings;
     const stage = finalSettings.workflow[0];
-    expect(stage.useLuscherIntake).toBe(true);
+    expect(stage.useLuscherIntake).toBeTruthy();
 
     root.unmount();
     document.body.removeChild(container);

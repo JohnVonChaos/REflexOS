@@ -65,6 +65,18 @@ export class WorkspaceManager {
     const db = await this.dbPromise;
     await db.put(FILE_STORE, file, file.path);
   }
+
+  async getRecentActivity(limit = 10) {
+    const db = await this.dbPromise;
+    const keys = await db.getAllKeys(RECENT_STORE) as string[];
+    const items: { action: string; path: string; timestamp: number }[] = [];
+    for (const k of keys) {
+      const at = await db.get(RECENT_STORE, k) as number | undefined;
+      if (at) items.push({ action: 'edited', path: k, timestamp: at });
+    }
+    items.sort((a,b) => b.timestamp - a.timestamp);
+    return items.slice(0, limit);
+  }
 }
 
 export default WorkspaceManager;

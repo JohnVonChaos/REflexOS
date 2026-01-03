@@ -1,7 +1,7 @@
 
 import React, { useState, useCallback } from 'react';
 import type { AISettings, WorkflowStage, AIProvider, ContextPacketType, CognitiveRole } from '../types';
-import { getDefaultSettings, ALL_CONTEXT_PACKETS, CONTEXT_PACKET_LABELS, ALL_COGNITIVE_ROLES, COGNITIVE_ROLE_LABELS } from '../types';
+import { getDefaultSettings, ALL_CONTEXT_PACKETS, CONTEXT_PACKET_LABELS, ALL_COGNITIVE_ROLES, COGNITIVE_ROLE_LABELS, getDefaultStageInputs } from '../types';
 import { CloseIcon, PlusIcon, TrashIcon, GripVerticalIcon, WorkflowIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
 
@@ -24,13 +24,10 @@ const StageInputSelector: React.FC<{
     onInputsChange: (newInputs: ContextPacketType[]) => void;
     onUseLuscherChange?: (use: boolean) => void;
 }> = ({ stage, stageIndex, allStages, onInputsChange, onUseLuscherChange }) => {
-    
     const precedingStages = allStages.slice(0, stageIndex);
 
     const handleToggle = (packet: ContextPacketType) => {
-        const newInputs = stage.inputs.includes(packet)
-            ? stage.inputs.filter(p => p !== packet)
-            : [...stage.inputs, packet];
+        const newInputs = stage.inputs.includes(packet) ? stage.inputs.filter(p => p !== packet) : [...stage.inputs, packet];
         onInputsChange(newInputs);
     };
 
@@ -80,18 +77,18 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
     const [localSettings, setLocalSettings] = useState<AISettings>(settings);
     const [expandedStage, setExpandedStage] = useState<string | null>(null);
 
-    const handleStageChange = <K extends keyof WorkflowStage>(stageId: string, field: K, value: WorkflowStage[K]) => {
+    const handleStageChange = (stageId: string, field: string, value: any) => {
         setLocalSettings(prev => ({
             ...prev,
             workflow: prev.workflow.map(stage => {
                 if (stage.id === stageId) {
-                    const updatedStage = { ...stage, [field]: value };
+                    const updatedStage: any = { ...stage, [field]: value };
                     if (field === 'provider') {
                         const newProvider = value as AIProvider;
                         const availableModels = prev.providers[newProvider].identifiers.split('\n').map(m => m.trim()).filter(Boolean);
                         updatedStage.selectedModel = availableModels[0] || '';
                     }
-                    return updatedStage;
+                    return updatedStage as WorkflowStage;
                 }
                 return stage;
             })
@@ -160,7 +157,7 @@ After you have completed your final synthesis you will:
 If the user explicitly asks you to "replace the core story", politely refuse
 and explain that the core story is immutable except when changed through the
 internal revision protocol (see § 4).`,
-            inputs: ['USER_QUERY']
+            inputs: getDefaultStageInputs('new-stage')
         };
         setLocalSettings(prev => {
             const newWorkflow = [...prev.workflow];
@@ -262,11 +259,11 @@ internal revision protocol (see § 4).`,
                                         </button>
                                         {expandedStage === stage.id && (
                                             <StageInputSelector 
-                                                stage={stage} 
-                                                stageIndex={index} 
-                                                allStages={localSettings.workflow} 
+                                                stage={stage}
+                                                stageIndex={index}
+                                                allStages={localSettings.workflow}
                                                 onInputsChange={(newInputs) => handleStageChange(stage.id, 'inputs', newInputs)}
-                                                onUseLuscherChange={(use) => handleStageChange(stage.id, 'useLuscherIntake' as any, use as any)}
+                                                onUseLuscherChange={(use) => handleStageChange(stage.id, 'useLuscherIntake', use)}
                                             />
                                         )}
                                     </div>
