@@ -3,22 +3,22 @@ import React from 'react';
 
 // Common props for icons
 const iconProps = {
-  className: "w-4 h-4",
-  fill: "none",
-  viewBox: "0 0 24 24",
-  stroke: "currentColor",
-  strokeWidth: 2,
+    className: "w-4 h-4",
+    fill: "none",
+    viewBox: "0 0 24 24",
+    stroke: "currentColor",
+    strokeWidth: 2,
 };
 
 export const PaperPlaneIcon: React.FC = () => (
-  <svg {...iconProps} className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-  </svg>
+    <svg {...iconProps} className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+    </svg>
 );
 
 export const StopIcon: React.FC = () => (
     <svg {...iconProps} className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-        <path d="M6 6h12v12H6z"/>
+        <path d="M6 6h12v12H6z" />
     </svg>
 );
 
@@ -94,9 +94,34 @@ export const FolderIcon: React.FC = () => (
     </svg>
 );
 
+
 export const FolderOpenIcon: React.FC = () => (
     <svg {...iconProps} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
+    </svg>
+);
+
+export const CpuChipIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+    </svg>
+);
+
+export const ClockIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+);
+
+export const ScaleIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+    </svg>
+);
+
+export const ChatBubbleLeftRightIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
     </svg>
 );
 
@@ -135,6 +160,12 @@ export const SaveIcon: React.FC = () => (
     <svg {...iconProps} viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3l-4-4-4 4z" />
         <path strokeLinecap="round" strokeLinejoin="round" d="M15 9h-6" />
+    </svg>
+);
+
+export const LoadIcon: React.FC = () => (
+    <svg {...iconProps} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
     </svg>
 );
 
@@ -205,11 +236,11 @@ export const WorkflowIcon: React.FC = () => (
 
 export const NetworkIcon: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
     <svg {...iconProps} viewBox="0 0 24 24" {...props} >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15.75a7.5 7.5 0 01-7.5-7.5" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 8.25a7.5 7.5 0 01-7.5 7.5" />
-      <circle cx="12" cy="12" r="2.25" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 15.75a7.5 7.5 0 01-7.5-7.5" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 8.25a7.5 7.5 0 017.5 7.5" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15.75a7.5 7.5 0 01-7.5-7.5" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 8.25a7.5 7.5 0 01-7.5 7.5" />
+        <circle cx="12" cy="12" r="2.25" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 15.75a7.5 7.5 0 01-7.5-7.5" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 8.25a7.5 7.5 0 017.5 7.5" />
     </svg>
 );
 
@@ -235,5 +266,11 @@ export const PlusIcon: React.FC = () => (
 export const GripVerticalIcon: React.FC = () => (
     <svg {...iconProps} className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
         <path d="M9 4h2v16H9zM13 4h2v16h-2z" />
+    </svg>
+);
+
+export const ChevronDownIcon: React.FC<{ size?: number }> = ({ size = 20 }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="6 9 12 15 18 9"></polyline>
     </svg>
 );

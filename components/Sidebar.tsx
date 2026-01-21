@@ -7,36 +7,36 @@ import { speechService } from '../services/speechService';
 import { InsightDisplay } from './InsightDisplay';
 
 interface SidebarProps {
-  projectFiles: ProjectFile[];
-  generatedFiles: GeneratedFile[];
-  selfNarrative: string;
-  insights: (MemoryAtom & { backgroundInsight: BackgroundInsight })[];
-  axioms: MemoryAtom[];
-  onImportFiles: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  onImportState: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  onExportAll: () => void;
-  onExportState: () => void;
-  onCompareFiles: (files: ProjectFile[]) => void;
-  onDeleteFiles: (files: ProjectFile[]) => void;
-  onToggleFileContext: (fileId: string) => void;
-  isFileInContext: (fileId: string) => boolean;
-  onShowCrystal: () => void;
-  isCrystalPanelVisible: boolean;
-  onShowAxioms: () => void;
-  onShowInsights: () => void;
-  onShowLogs: () => void;
-  onShowSrgExplorer: () => void;
+    projectFiles: ProjectFile[];
+    generatedFiles: GeneratedFile[];
+    selfNarrative: string;
+    insights: (MemoryAtom & { backgroundInsight: BackgroundInsight })[];
+    axioms: MemoryAtom[];
+    onImportFiles: (event: React.ChangeEvent<HTMLInputElement>) => void;
+    onImportState: (event: React.ChangeEvent<HTMLInputElement>) => void;
+    onExportAll: () => void;
+    onExportState: () => void;
+    onCompareFiles: (files: ProjectFile[]) => void;
+    onDeleteFiles: (files: ProjectFile[]) => void;
+    onToggleFileContext: (fileId: string) => void;
+    isFileInContext: (fileId: string) => boolean;
+    onShowCrystal: () => void;
+    isCrystalPanelVisible: boolean;
+    onShowAxioms: () => void;
+    onShowInsights: () => void;
+    onShowLogs: () => void;
+    onShowSrgExplorer: () => void;
     onShowFileHud?: () => void;
     onShowBackgroundCognition?: () => void;
-  onShowKnowledgeModules: () => void;
-  onShowImportHistory?: () => void;
-  onToggleMessageContext: (uuid: string) => void;
-  onToggleGeneratedFileContext: (fileName: string) => void;
-  isGeneratedFileInContext: (fileName: string) => boolean;
+    onShowKnowledgeModules: () => void;
+    onShowImportHistory?: () => void;
+    onToggleMessageContext: (uuid: string) => void;
+    onToggleGeneratedFileContext: (fileName: string) => void;
+    isGeneratedFileInContext: (fileName: string) => boolean;
 }
 
 interface FileTree {
-  [key: string]: FileTree | ProjectFile[];
+    [key: string]: FileTree | ProjectFile[];
 }
 
 const buildFileTree = (files: ProjectFile[]): FileTree => {
@@ -58,39 +58,39 @@ const buildFileTree = (files: ProjectFile[]): FileTree => {
 };
 
 const FileTreeItem: React.FC<{
-  name: string;
-  item: FileTree | ProjectFile[];
-  level: number;
-  selectedFileIds: string[];
-  handleFileSelectChange: (fileId: string, checked: boolean) => void;
-  isFileInContext: (fileId: string) => boolean;
-  onToggleFileContext: (fileId: string) => void;
-  onDeleteFile: (file: ProjectFile) => void;
+    name: string;
+    item: FileTree | ProjectFile[];
+    level: number;
+    selectedFileIds: string[];
+    handleFileSelectChange: (fileId: string, checked: boolean) => void;
+    isFileInContext: (fileId: string) => boolean;
+    onToggleFileContext: (fileId: string) => void;
+    onDeleteFile: (file: ProjectFile) => void;
 }> = ({ name, item, level, onDeleteFile, ...props }) => {
     const [isCollapsed, setIsCollapsed] = useState(true);
 
     if (Array.isArray(item)) { // Base case: list of files
-      return (
-        <ul className="space-y-1">
-          {item.sort((a,b) => a.name.localeCompare(b.name)).map((file) => (
-            <li key={file.id} className="group flex items-center gap-2 p-1.5 rounded-md hover:bg-gray-800" style={{ paddingLeft: `${level * 12 + 12}px` }}>
-              <input type="checkbox" className="form-checkbox bg-gray-700 border-gray-600 rounded" checked={props.selectedFileIds.includes(file.id)} onChange={(e) => props.handleFileSelectChange(file.id, e.target.checked)} />
-              <FileIcon />
-              <span className="flex-1 text-sm text-gray-300 truncate" title={`${file.name}\nImported: ${new Date(file.importedAt).toLocaleString()}`}>{file.name.split('/').pop()}</span>
-              <div className="flex items-center gap-1">
-                <ToggleSwitch checked={props.isFileInContext(file.id)} onToggle={() => props.onToggleFileContext(file.id)} title="Include in context" />
-                <button 
-                    onClick={(e) => { e.stopPropagation(); onDeleteFile(file); }}
-                    className="p-1 text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Delete this file"
-                >
-                    <TrashIcon />
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      );
+        return (
+            <ul className="space-y-1">
+                {item.sort((a, b) => a.name.localeCompare(b.name)).map((file) => (
+                    <li key={file.id} className="group flex items-center gap-2 p-1.5 rounded-md hover:bg-gray-800" style={{ paddingLeft: `${level * 12 + 12}px` }}>
+                        <input type="checkbox" className="form-checkbox bg-gray-700 border-gray-600 rounded" checked={props.selectedFileIds.includes(file.id)} onChange={(e) => props.handleFileSelectChange(file.id, e.target.checked)} />
+                        <FileIcon />
+                        <span className="flex-1 text-sm text-gray-300 truncate" title={`${file.name}\nImported: ${new Date(file.importedAt).toLocaleString()}`}>{file.name.split('/').pop()}</span>
+                        <div className="flex items-center gap-1">
+                            <ToggleSwitch checked={props.isFileInContext(file.id)} onToggle={() => props.onToggleFileContext(file.id)} title="Include in context" />
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onDeleteFile(file); }}
+                                className="p-1 text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Delete this file"
+                            >
+                                <TrashIcon />
+                            </button>
+                        </div>
+                    </li>
+                ))}
+            </ul>
+        );
     }
 
     // Recursive case: directory
@@ -110,7 +110,7 @@ const FileTreeItem: React.FC<{
             {!isCollapsed && (
                 <div>
                     {subdirectories.sort().map(key => (
-                       <FileTreeItem key={key} name={key} item={item[key] as FileTree} level={level + 1} onDeleteFile={onDeleteFile} {...props} />
+                        <FileTreeItem key={key} name={key} item={item[key] as FileTree} level={level + 1} onDeleteFile={onDeleteFile} {...props} />
                     ))}
                     {files.length > 0 && <FileTreeItem name="_files" item={files} level={level + 1} onDeleteFile={onDeleteFile} {...props} />}
                 </div>
@@ -120,7 +120,7 @@ const FileTreeItem: React.FC<{
 };
 
 
-const CollapsibleSection: React.FC<{title: string, count?: number, children: React.ReactNode, actions?: React.ReactNode}> = ({ title, count, children, actions }) => {
+const CollapsibleSection: React.FC<{ title: string, count?: number, children: React.ReactNode, actions?: React.ReactNode }> = ({ title, count, children, actions }) => {
     const [isCollapsed, setIsCollapsed] = useState(false);
     return (
         <div className="border-b border-gray-700/50">
@@ -140,8 +140,8 @@ const CollapsibleSection: React.FC<{title: string, count?: number, children: Rea
     );
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ 
-    projectFiles, 
+export const Sidebar: React.FC<SidebarProps> = ({
+    projectFiles,
     generatedFiles,
     selfNarrative,
     insights,
@@ -165,13 +165,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onToggleMessageContext,
     onToggleGeneratedFileContext,
     isGeneratedFileInContext,
+    onShowBackgroundCognition,
 }) => {
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
     const projectFileInputRef = useRef<HTMLInputElement>(null);
     const stateFileInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileSelectChange = (fileId: string, checked: boolean) => {
-        setSelectedFileIds(prev => 
+        setSelectedFileIds(prev =>
             checked ? [...prev, fileId] : prev.filter(id => id !== fileId)
         );
     };
@@ -193,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         // Removed confirm dialog due to sandboxing issues. Deletion is now immediate.
         onDeleteFiles([file]);
     }
-    
+
     const handleDownloadSingle = (file: GeneratedFile) => {
         const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -237,16 +238,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <NetworkIcon />
                     </button>
-                                        {onShowImportHistory && (
-                                            <button
-                                                onClick={onShowImportHistory}
-                                                title="Calibration"
-                                                aria-label="Calibration"
-                                                className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
-                                            >
-                                                <ScalesIcon />
-                                            </button>
-                                        )}
+                    {onShowImportHistory && (
+                        <button
+                            onClick={onShowImportHistory}
+                            title="Calibration"
+                            aria-label="Calibration"
+                            className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                        >
+                            <ScalesIcon />
+                        </button>
+                    )}
                     <button
                         onClick={onShowLogs}
                         title="Show Logs"
@@ -254,9 +255,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <DocumentTextIcon />
                     </button>
-                    <button 
-                        onClick={onShowCrystal} 
-                        title={isCrystalPanelVisible ? "Hide Memory Crystal" : "Show Memory Crystal"} 
+                    <button
+                        onClick={onShowBackgroundCognition}
+                        title="Background Systems"
+                        className="p-2 rounded-md text-gray-400 hover:text-cyan-400 hover:bg-gray-800 transition-colors"
+                    >
+                        <GlobeIcon />
+                    </button>
+                    <button
+                        onClick={onShowCrystal}
+                        title={isCrystalPanelVisible ? "Hide Memory Crystal" : "Show Memory Crystal"}
                         className={`p-2 rounded-md transition-colors ${isCrystalPanelVisible ? 'bg-cyan-900/50 text-cyan-400' : 'text-gray-400 hover:text-cyan-400 hover:bg-gray-800'}`}
                     >
                         <CrystalIcon />
@@ -279,9 +287,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <button onClick={onExportState} title="Export current session to a .json file" className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"><SaveIcon /> Export State</button>
                 </div>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto">
-                <CollapsibleSection 
+                <CollapsibleSection
                     title="Core Narrative"
                     actions={
                         <button onClick={(e) => { e.stopPropagation(); handleSpeakNarrative(); }} title="Read narrative aloud" className="p-1 rounded-full text-gray-400 hover:text-cyan-400 hover:bg-gray-700/50">
@@ -299,7 +307,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                     </div>
                 </CollapsibleSection>
-                
+
                 <div className="border-b border-gray-700/50 p-2">
                     <h3 className="p-1 text-sm font-semibold text-gray-300">Cognitive Artifacts</h3>
                     <div className="space-y-2 p-1">
@@ -314,15 +322,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                 <CollapsibleSection title="Project Files" count={projectFiles.length}>
                     {projectFiles.length === 0 ? (
-                         <p className="text-xs text-gray-500 italic text-center p-4">No project files loaded. Use 'Import Files' to add some.</p>
+                        <p className="text-xs text-gray-500 italic text-center p-4">No project files loaded. Use 'Import Files' to add some.</p>
                     ) : (
                         <div className="space-y-1">
                             {treeRoots.map(key => (
-                                <FileTreeItem 
-                                    key={key} 
-                                    name={key} 
-                                    item={fileTree[key] as FileTree} 
-                                    level={0} 
+                                <FileTreeItem
+                                    key={key}
+                                    name={key}
+                                    item={fileTree[key] as FileTree}
+                                    level={0}
                                     selectedFileIds={selectedFileIds}
                                     handleFileSelectChange={handleFileSelectChange}
                                     isFileInContext={isFileInContext}
@@ -331,7 +339,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 />
                             ))}
                             {rootFiles.length > 0 && (
-                                <FileTreeItem 
+                                <FileTreeItem
                                     name="_files"
                                     item={rootFiles}
                                     level={0}
@@ -357,7 +365,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </CollapsibleSection>
 
                 <CollapsibleSection title="Generated Files" count={generatedFiles.length}>
-                     {generatedFiles.length === 0 ? (
+                    {generatedFiles.length === 0 ? (
                         <p className="text-xs text-gray-500 italic text-center p-4">No files generated yet.</p>
                     ) : (
                         <ul className="space-y-1">

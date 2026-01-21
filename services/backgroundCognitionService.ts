@@ -10,6 +10,11 @@ import { srgService } from './srgService';
 import { GoogleGenAI, Type } from '@google/genai';
 import { CONTEXT_PACKET_LABELS, ALL_CONTEXT_PACKETS } from '../types';
 import { resurfacingService } from './resurfacingService';
+import { sessionService } from './sessionService';
+import { dualProcessEngine } from './dualProcessEngine';
+import { contextDiffer } from './contextDiffer';
+import { scratchpadService } from './scratchpad';
+import type { DistilledInsight } from '../types/dualProcess';
 
 interface FullCognitionContext {
   messages: MemoryAtom[];
@@ -44,6 +49,7 @@ class BackgroundCognitionService {
     context: FullCognitionContext,
     roleSetting: RoleSetting,
     providers: AISettings['providers'],
+    workflow: WorkflowStage[],
     workflowStage?: WorkflowStage,
     recentQueriesForDedup?: string[]
   ): Promise<BackgroundInsight | null> {
@@ -69,12 +75,6 @@ class BackgroundCognitionService {
         return null;
       }
 
-      // Check for duplicates
-      if (recentQueriesForDedup && recentQueriesForDedup.includes(query.toLowerCase().trim())) {
-        loggingService.log('WARN', `Skipping duplicate query "${query}"`);
-        return null;
-      }
-
       loggingService.log('INFO', `[BACKGROUND SUBCONSCIOUS] Generated query: "${query}"`);
 
       // Query SRG FIRST if knowledge modules are loaded
@@ -90,7 +90,7 @@ class BackgroundCognitionService {
             maxDepth: 3,
             useSynsets: true,
             useRelations: true,
-            generateLength: 60
+            generateLength: 500  // Increased from 60 to get meaningful passages
           });
 
           if (hybridResult && hybridResult.generated && hybridResult.generated.length > 20) {
@@ -117,12 +117,34 @@ class BackgroundCognitionService {
       if (shouldSearchWeb) {
         loggingService.log('INFO', '[BACKGROUND CONSCIOUS] SRG insufficient - performing web search...');
 
-        const searchResult = await performWebSearch(query, roleSetting, providers);
+        const searchResult = await performWebSearch(query, roleSetting, providers, { playwrightSearchUrl: 'http://localhost:3005' } as any);
 
         if (searchResult && searchResult.text) {
-          webResults = `[WEB SEARCH RESULTS]\n${searchResult.text}`;
-          sources = searchResult.sources;
-          loggingService.log('INFO', `[BACKGROUND CONSCIOUS] Web search returned ${searchResult.text.length} chars`);
+          loggingService.log('INFO', `[BACKGROUND CONSCIOUS] Web search returned ${searchResult.text.length} chars - distilling...`);
+
+          // ========== DUAL-PROCESS DISTILLATION ==========
+          // Generator/Refiner compress raw insight into compact knowledge chunk
+          try {
+            const distilled = await dualProcessEngine.distillInsight(
+              {
+                query,
+                insight: searchResult.text,
+                sources: searchResult.sources || []
+              },
+              roleSetting,
+              providers,
+              workflow // Pass configured background stages
+            );
+
+            webResults = `[WEB SEARCH RESULTS - DISTILLED]\n${distilled.distilledChunk}\n\n[Compression: ${distilled.originalLength} → ${distilled.compressedLength} chars (${Math.round((1 - distilled.compressedLength / distilled.originalLength) * 100)}% reduction)]`;
+            sources = distilled.sources;
+
+            loggingService.log('INFO', `[BACKGROUND CONSCIOUS] Distilled to ${distilled.compressedLength} chars (${Math.round((1 - distilled.compressedLength / distilled.originalLength) * 100)}% reduction)`);
+          } catch (distillError) {
+            loggingService.log('WARN', '[BACKGROUND CONSCIOUS] Distillation failed, using raw results', { error: distillError });
+            webResults = `[WEB SEARCH RESULTS]\n${searchResult.text}`;
+            sources = searchResult.sources;
+          }
         } else {
           loggingService.log('WARN', '[BACKGROUND CONSCIOUS] Web search returned no results');
         }
@@ -172,65 +194,90 @@ class BackgroundCognitionService {
   private buildContextString(context: FullCognitionContext, workflowStage?: WorkflowStage): string {
     const { messages, baseContextPackets, selfNarrative, projectFiles, contextFileNames, rcb } = context;
 
+    // --- SAFETY TRUNCATION ---
+    // Target ~100k characters max to be safe for 128k token limit (roughly 4 chars/token, so 400k chars is theoretical max, but overhead/safety margin needed)
+    // Actually 128k tokens is huge. The error said 184829 tokens? No, "prompt is too long: 184829". If unit is tokens, that's massive.
+    // If unit is chars, 184k chars is only ~46k tokens.
+    // Wait, the error said: "prompt is too long: 184829, model maximum context length: 131071".
+    // 131071 is exactly 2^17 - 1. This is likely a token count or a very specific character count limit. 
+    // Given Gemini's 2M context, this lower limit (128k) suggests the 'flash' model or a specific RPM/TPM tier limit or the library's local check.
+    // Let's assume a Safe Max of 60,000 characters to be extremely conservative and fast.
+
+    const MAX_CONTEXT_CHARS = 60000;
+
     // Use workflow-style context packets if available
     if (baseContextPackets && workflowStage) {
       let contextString = '';
+      let currentLength = 0;
+
+      // Priority order: RCB -> User Query -> Recent History -> Files -> everything else
+      // We will loop through inputs but just append for now, truncation happens at end if needed?
+      // Better to check as we go.
+
       for (const input of workflowStage.inputs) {
+        if (currentLength > MAX_CONTEXT_CHARS) break;
+
         if (ALL_CONTEXT_PACKETS.includes(input as any)) {
           const label = CONTEXT_PACKET_LABELS[input as keyof typeof CONTEXT_PACKET_LABELS];
-          const content = baseContextPackets[input] || 'Not available.';
-          contextString += `\n\n--- ${label} ---\n${content}`;
+          const rawContent = baseContextPackets[input] || 'Not available.';
+          const truncatedContent = rawContent.length > 20000 ? rawContent.substring(0, 20000) + '...[TRUNCATED]' : rawContent;
+
+          contextString += `\n\n--- ${label} ---\n${truncatedContent}`;
+          currentLength += truncatedContent.length;
         }
       }
       return contextString;
     }
 
-    // Fallback to legacy context building
-    const conversationHistory = messages
-      .filter(m => m.type === 'user_message' || m.type === 'model_response')
-      .slice(-20)
-      .map(m => `${m.role === 'user' ? 'User' : 'AI'}: ${m.text}`)
-      .join('\n');
+    // Fallback Legacy Building
 
-    const existingInsights = messages
-      .filter(m => m.backgroundInsight && typeof m.backgroundInsight.insight === 'string')
-      .map(m => `--- PREVIOUS RESEARCH ---\nSearch Query: "${m.backgroundInsight!.query}"\nResulting Insight:\n${m.backgroundInsight!.insight}\n--- END PREVIOUS RESEARCH ---`)
-      .join('\n\n');
-
-    const existingAxioms = messages
-      .flatMap(m => m.type === 'axiom' ? [m] : (m.cognitiveTrace?.filter(t => t.type === 'axiom') || []))
-      .map(a => `- ${a.text}`)
-      .join('\n');
-
-    const filesInContext = projectFiles
-      .filter(f => contextFileNames.includes(f.name) && typeof f.content === 'string')
-      .map(f => `--- FILE: ${f.name} ---\n${f.content.substring(0, 2000)}...`)
-      .join('\n\n');
-
+    // 1. RCB (High Priority)
     const rcbString = rcb ? JSON.stringify({
       conscious_focal_points: rcb.conscious_focal_points,
       current_mission_state: rcb.current_mission_state,
       plan_of_action: rcb.plan_of_action,
     }, null, 2) : 'Not available.';
 
-    return `
-[RUNNING CONTEXT BUFFER (AI's Working Memory)]
-${rcbString}
+    // 2. Recent Messages (High Priority)
+    // Only take last 10 instead of 20 to save space
+    const conversationHistory = messages
+      .filter(m => m.type === 'user_message' || m.type === 'model_response')
+      .slice(-10)
+      .map(m => {
+        // Truncate individual massive messages (like previous huge generations)
+        const text = m.text || '';
+        return `${m.role === 'user' ? 'User' : 'AI'}: ${text.length > 2000 ? text.substring(0, 2000) + '...' : text}`;
+      })
+      .join('\n');
 
-[PROJECT FILES IN CONTEXT]
-${filesInContext || 'None'}
+    // 3. Files (Medium Priority - Biggest Danger)
+    const filesInContext = projectFiles
+      .filter(f => contextFileNames.includes(f.name) && typeof f.content === 'string')
+      .map(f => `--- FILE: ${f.name} ---\n${f.content.substring(0, 5000)}...`) // Hard truncate files at 5k chars
+      .join('\n\n');
+
+    // 4. Existing Insights (Lower Priority)
+    const existingInsights = messages
+      .filter(m => m.backgroundInsight && typeof m.backgroundInsight.insight === 'string')
+      .slice(-3) // Only last 3 insights
+      .map(m => `--- INSIGHT ---\n${m.backgroundInsight!.insight.substring(0, 1000)}...`)
+      .join('\n\n');
+
+    return `
+[RUNNING CONTEXT BUFFER]
+${rcbString}
 
 [CONVERSATION HISTORY]
 ${conversationHistory}
 
-[EXISTING RESEARCH INSIGHTS (Topics Already Covered)]
+[PROJECT FILES]
+${filesInContext || 'None'}
+
+[PREVIOUS INSIGHTS]
 ${existingInsights || 'None'}
 
-[LEARNED AXIOMS]
-${existingAxioms || 'None'}
-
 [CORE NARRATIVE]
-${selfNarrative || 'None'}
+${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
 `;
   }
 
@@ -305,13 +352,13 @@ ${selfNarrative || 'None'}
       const recentUserMessages = allMessages.filter(m => m.role === 'user').slice(-20).map(m => m.text || '').join(' ');
       if (!recentUserMessages || recentUserMessages.trim().length === 0) return;
       const words = recentUserMessages.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-      const stopwords = new Set(['the','and','a','to','of','in','for','is','it','i','you','that','on','my','with','have','be']);
+      const stopwords = new Set(['the', 'and', 'a', 'to', 'of', 'in', 'for', 'is', 'it', 'i', 'you', 'that', 'on', 'my', 'with', 'have', 'be']);
       const counts: Record<string, number> = {};
       for (const w of words) {
         if (stopwords.has(w) || w.length < 3) continue;
         counts[w] = (counts[w] || 0) + 1;
       }
-      const top = Object.entries(counts).sort((a,b) => b[1]-a[1]).slice(0,5).map(([w,c]) => `${w}(${c})`).join(', ');
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([w, c]) => `${w}(${c})`).join(', ');
 
       const reflectionText = `Reflection: Recent user focus appears to be on: ${top}. Consider researching or preparing resources related to these topics.`;
 
@@ -346,8 +393,14 @@ ${selfNarrative || 'None'}
       const role = roleSetting || defaults.roles.background;
       const provs = providers || defaults.providers;
 
+      const userOrModel = allMessages.filter(m => m.type === 'user_message' || m.type === 'model_response');
+      if (userOrModel.length === 0) {
+        loggingService.log('DEBUG', 'runChainedCycle skipping: No conversation history to analyze.');
+        return { subconscious: '', conscious: '', synthesis: [] };
+      }
+
       loggingService.log('INFO', '[BACKGROUND SUBCONSCIOUS] Running subconscious layer (chained).');
-      const convo = allMessages.filter(m => m.type === 'user_message' || m.type === 'model_response').slice(-40).map(m => `${m.role}: ${m.text}`).join('\n');
+      const convo = userOrModel.slice(-40).map(m => `${m.role}: ${m.text}`).join('\n');
       const sysSub = SUBCONSCIOUS_PROMPT.replace('{CURRENT_DATETIME}', new Date().toString());
       const subconscious = (await generateText(convo, sysSub, role, provs)) || '';
 
@@ -373,6 +426,97 @@ ${selfNarrative || 'None'}
       return { subconscious: '', conscious: '', synthesis: [] };
     }
   }
+
+  /**
+   * Run the configured Dual Process (Generator -> Refiner) cycle.
+   * This bypasses web search and directly executes the configured 'backgroundWorkflow' stages.
+   */
+  async runDualProcessCycle(
+    context: FullCognitionContext,
+    providers: AISettings['providers'],
+    workflow: WorkflowStage[]
+  ): Promise<void> {
+    try {
+      loggingService.log('INFO', `[DUAL PROCESS] Starting cycle with ${workflow.length} stages.`);
+
+      // 1. Build Shared Context
+      const contextString = this.buildContextString(context);
+
+      let previousOutput = "";
+
+      for (const stage of workflow) {
+        if (!stage.enabled) continue;
+
+        loggingService.log('INFO', `[DUAL PROCESS] Running stage: ${stage.name} (${stage.id})`);
+
+        // Resolve inputs (Context + Output of previous)
+        let stageInput = contextString;
+        if (previousOutput) {
+          stageInput += `\n\n[PREVIOUS STAGE OUTPUT]\n${previousOutput}`;
+        }
+
+        // Generate
+        const roleSetting: RoleSetting = {
+          enabled: true,
+          provider: stage.provider,
+          selectedModel: stage.selectedModel
+        };
+
+        const output = await generateText(stageInput, stage.systemPrompt, roleSetting, providers);
+        previousOutput = output;
+
+        // Log to Scratchpad for HUD visibility
+        await scratchpadService.append(
+          stage.id.includes('generator') ? 'GENERATOR' : stage.id.includes('refiner') ? 'REFINER' : 'SYSTEM',
+          output,
+          'THOUGHT',
+          'LOW'
+        );
+
+        // Persist to Memory (Optional: make this configurable or only for final stage)
+        // For now, we only persist to scratchpad to keep "Thought" separate from "Memory" unless explicitly committed.
+
+        loggingService.log('INFO', `[DUAL PROCESS] Stage ${stage.name} complete.`);
+      }
+
+    } catch (e) {
+      loggingService.log('ERROR', 'runDualProcessCycle failed', { error: e });
+    }
+  }
 }
 
 export const backgroundCognitionService = new BackgroundCognitionService();
+
+export async function runWebResearchCycle(
+  topic: string
+): Promise<string[]> {
+  try {
+    const session = await sessionService.loadSession();
+    const providers = session?.aiSettings?.providers || getDefaultSettings().providers;
+    // Use background role or default to a safe fallback
+    const roleSetting = session?.aiSettings?.workflow?.find(w => w.id === 'background_cognition') || {
+      id: 'web_research',
+      name: 'Web Research',
+      provider: 'gemini',
+      selectedModel: 'gemini-2.5-flash',
+      enabled: true
+    };
+
+    // Use performWebSearch instead of browser tools
+    const searchResult = await performWebSearch(topic, roleSetting as RoleSetting, providers);
+
+    if (!searchResult || !searchResult.text) {
+      console.error('Search failed or returned no text.');
+      return [];
+    }
+
+    // Adapt the single result text to the string[] expected return type
+    // The previous implementation returned full content of 3 pages. 
+    // This implementation returns the synthesized answer/summary from the search provider.
+    return [searchResult.text];
+
+  } catch (error) {
+    console.error('runWebResearchCycle failed:', error);
+    return [];
+  }
+}

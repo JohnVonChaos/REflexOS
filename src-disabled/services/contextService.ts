@@ -94,10 +94,24 @@ class ContextService {
     
     try {
     const responseJson = await generateText(prompt, '', roleSetting, providers);
+    loggingService.log('DEBUG', 'Context manager LLM response received', { responsePreview: String(responseJson).substring(0, 300) });
 
-    // Strip possible code fences and parse safely
-    const cleaned = String(responseJson).replace(/^```(?:json)?\s*/im, '').replace(/\s*```$/im, '').trim();
-    const parsedResponse = JSON.parse(cleaned);
+    // Robust fence extraction (handles trailing commentary)
+    let candidate = String(responseJson).trim();
+    const fencedMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    if (fencedMatch) {
+        candidate = fencedMatch[1].trim();
+        loggingService.log('DEBUG', 'Extracted from fences', { candidatePreview: candidate.substring(0, 200) });
+    } else {
+        // Pattern fallback for un-fenced JSON
+        const jsonMatch = candidate.match(/(\[[\s\S]*\])|(\{[\s\S]*\})/);
+        if (jsonMatch) {
+            candidate = jsonMatch[0];
+            loggingService.log('DEBUG', 'Extracted via pattern match', { candidatePreview: candidate.substring(0, 200) });
+        }
+    }
+    loggingService.log('DEBUG', 'Attempting to parse context manager JSON', { candidate: candidate.substring(0, 300) });
+    const parsedResponse = JSON.parse(candidate);
 
         if (parsedResponse.setOrbits && Array.isArray(parsedResponse.setOrbits)) {
             result.setOrbits = parsedResponse.setOrbits.filter(
@@ -116,7 +130,8 @@ class ContextService {
         return result;
 
     } catch(e: any) {
-        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: e?.toString ? e.toString() : e, stack: e?.stack, rawResponse: typeof e === 'string' ? e : undefined });
+        const errorDetails = { message: e?.message, name: e?.name, stack: e?.stack, raw: String(e), type: typeof e };
+        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: errorDetails });
         // Fallback: Give all new items a default medium orbit if AI fails
         result.setOrbits = newArtifacts.map(a => ({ uuid: a.uuid, strength: 5 }));
         return result;

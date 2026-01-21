@@ -1,0 +1,290 @@
+import { chromium, Browser, Page } from 'playwright';
+import express from 'express';
+
+const app = express();
+app.use(express.json());
+
+// Enable CORS for all origins
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
+
+let browser: Browser | null = null;
+
+// Realistic user agents (recent Chrome versions)
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+];
+
+// Random viewport sizes (common resolutions)
+const VIEWPORTS = [
+    { width: 1920, height: 1080 },
+    { width: 1366, height: 768 },
+    { width: 1536, height: 864 },
+    { width: 1440, height: 900 }
+];
+
+function randomChoice<T>(arr: T[]): T {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+async function getBrowser(): Promise<Browser> {
+    if (!browser) {
+        console.log('[Server] Launching Browser (humanized)...');
+        browser = await chromium.launch({
+            headless: false,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+            ]
+        });
+    }
+    return browser;
+}
+
+// Simulate human-like mouse movements
+async function humanMouseMove(page: Page) {
+    const viewport = page.viewportSize();
+    if (!viewport) return;
+
+    // Random movements
+    for (let i = 0; i < 3; i++) {
+        const x = Math.floor(Math.random() * viewport.width);
+        const y = Math.floor(Math.random() * viewport.height);
+        await page.mouse.move(x, y, { steps: 10 });
+        await page.waitForTimeout(Math.random() * 200 + 100);
+    }
+}
+
+// Simulate human-like scrolling
+async function humanScroll(page: Page) {
+    const scrolls = Math.floor(Math.random() * 3) + 1;
+    for (let i = 0; i < scrolls; i++) {
+        await page.evaluate(() => {
+            window.scrollBy({
+                top: Math.random() * 300 + 100,
+                behavior: 'smooth'
+            });
+        });
+        await page.waitForTimeout(Math.random() * 500 + 300);
+    }
+}
+
+// Fetch FULL content from a URL - for Llama4 Maverick's million tokens!
+async function fetchPageContent(page: Page, url: string): Promise<{ title: string; snippet: string }> {
+    try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+        // Wait for content to load
+        await page.waitForTimeout(1000);
+
+        const content = await page.evaluate(() => {
+            // Get title
+            const title = document.querySelector('h1')?.textContent?.trim() ||
+                document.title || '';
+
+            // Get ALL article content - the whole damn thing!
+            let fullText = '';
+
+            // Try to find the main content area
+            const contentArea = document.querySelector('article, main, .content, .article-body, .entry-content, #content, .post-content') ||
+                document.body;
+
+            if (contentArea) {
+                // Get all paragraphs, headings, and list items
+                const elements = contentArea.querySelectorAll('p, h1, h2, h3, h4, li');
+                elements.forEach(el => {
+                    const text = el.textContent?.trim();
+                    if (text && text.length > 10) {
+                        fullText += text + '\n\n';
+                    }
+                });
+            }
+
+            // If we got nothing, try just getting all text
+            if (!fullText) {
+                fullText = document.body?.innerText || '';
+            }
+
+            return {
+                title: title,
+                snippet: fullText.substring(0, 50000) // 50k chars per page for full content
+            };
+        });
+
+        console.log(`[Server] Scraped ${content.snippet.length} chars from ${url.substring(0, 40)}...`);
+        return content;
+    } catch (e: any) {
+        console.log(`[Server] Failed to fetch ${url}: ${e.message}`);
+        return { title: '', snippet: '' };
+    }
+}
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', message: 'Playwright search server is running' });
+});
+
+app.post('/search', async (req, res) => {
+    const { query, maxResults = 5 } = req.body;
+
+    if (!query) {
+        return res.status(400).json({ error: 'Query is required' });
+    }
+
+    console.log(`[Server] Searching: ${query}`);
+
+    let page: Page | null = null;
+    try {
+        const browserInstance = await getBrowser();
+
+        // Create context with random user agent and viewport
+        const context = await browserInstance.newContext({
+            userAgent: randomChoice(USER_AGENTS),
+            viewport: randomChoice(VIEWPORTS),
+            locale: 'en-US',
+            timezoneId: 'America/New_York',
+            permissions: [],
+            extraHTTPHeaders: {
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+        });
+
+        page = await context.newPage();
+
+        // Inject stealth scripts to hide automation
+        await page.addInitScript(() => {
+            // Override navigator.webdriver
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+
+            // Override plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+
+            // Override languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+
+            // Chrome runtime
+            (window as any).chrome = {
+                runtime: {}
+            };
+
+            // Permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters: any) =>
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: 'denied' } as PermissionStatus)
+                    : originalQuery(parameters);
+        });
+
+        // Bing search with human-like behavior
+        const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+
+        // Random delay before navigation (1-3 seconds)
+        await page.waitForTimeout(Math.random() * 2000 + 1000);
+
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+        // Human-like behavior after page load
+        await page.waitForTimeout(Math.random() * 1000 + 1500);
+        await humanMouseMove(page);
+        await page.waitForTimeout(Math.random() * 500 + 500);
+        await humanScroll(page);
+
+        // Get URLs from Bing search results
+        const urls = await page.evaluate(() => {
+            const items: { url: string; title: string }[] = [];
+
+            // Bing uses li.b_algo for organic results
+            const results = document.querySelectorAll('li.b_algo');
+
+            results.forEach(result => {
+                if (items.length >= 5) return;
+
+                const titleLink = result.querySelector('h2 a');
+                if (!titleLink) return;
+
+                const href = titleLink.getAttribute('href') || '';
+                const title = titleLink.textContent?.trim() || '';
+
+                // Skip Bing internal links and ads
+                if (href.includes('bing.com') ||
+                    href.includes('microsoft.com/en-us/bing') ||
+                    !href.startsWith('http')) {
+                    return;
+                }
+
+                if (title && href && !items.find(i => i.url === href)) {
+                    items.push({ url: href, title });
+                }
+            });
+
+            return items;
+        });
+
+        console.log(`[Server] Found ${urls.length} URLs, fetching content...`);
+
+        // Fetch actual content from each URL with random delays
+        const results = [];
+        for (const item of urls) {
+            // Longer random delay (2-5 seconds) to look more human
+            const delay = Math.floor(Math.random() * 3000) + 2000;
+            console.log(`[Server] Waiting ${delay}ms, then fetching: ${item.url.substring(0, 50)}...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            const content = await fetchPageContent(page, item.url);
+            results.push({
+                title: content.title || item.title,
+                url: item.url,
+                snippet: content.snippet
+            });
+        }
+
+        // await page.close();
+        // await context.close();
+
+        console.log(`[Server] Done! ${results.length} results with content`);
+        res.json(results);
+
+    } catch (error: any) {
+        console.error('[Server] Search error:', error.message);
+        // if (page) await page.close();
+        res.status(500).json({ error: error.message });
+    }
+});
+
+const PORT = 3005;
+app.listen(PORT, () => {
+    console.log(`Browser Agent Server running on port ${PORT}`);
+});
+
+// Cleanup on exit
+process.on('SIGINT', async () => {
+    if (browser) {
+        await browser.close();
+    }
+    process.exit(0);
+});

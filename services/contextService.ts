@@ -144,7 +144,18 @@ class ContextService {
     try {
         const responseJson = await generateText(prompt, '', roleSetting, providers);
         
-        const parsedResponse = JSON.parse(responseJson.trim().replace(/```json|```/g, ''));
+        // Robust fence extraction (handles trailing commentary)
+        let candidate = String(responseJson).trim();
+        const fencedMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (fencedMatch) {
+            candidate = fencedMatch[1].trim();
+        } else {
+            const jsonMatch = candidate.match(/(\[[\s\S]*\])|(\{[\s\S]*\})/);
+            if (jsonMatch) {
+                candidate = jsonMatch[0];
+            }
+        }
+        const parsedResponse = JSON.parse(candidate);
 
         if (parsedResponse.setOrbits && Array.isArray(parsedResponse.setOrbits)) {
             result.setOrbits = parsedResponse.setOrbits.filter(
@@ -162,8 +173,9 @@ class ContextService {
         loggingService.log('INFO', 'Context orbit management successful.', { result });
         return result;
 
-    } catch(e) {
-        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: e });
+    } catch(e: any) {
+        const errorDetails = { message: e?.message, name: e?.name, stack: e?.stack, raw: String(e), type: typeof e };
+        loggingService.log('ERROR', 'Failed to manage context orbits. Applying fallback.', { error: errorDetails });
         result.setOrbits = newArtifacts.map(a => ({ uuid: a.uuid, strength: 5 }));
         return result;
     }

@@ -12,6 +12,8 @@ import { backgroundOrchestrator } from '../services/backgroundOrchestrator';
 import { rcbService, calculateRcbSize } from '../services/rcbService';
 import { extractCodeBlocksFromText } from '../services/codeBlockParser';
 import { loggingService } from '../services/loggingService';
+// Context tier manager (admin & persistence hooks)
+import { contextTierManager } from '../../services/contextTierManager';
 import { indexAxiomsToSRG } from '../services/axiomIndexing';
 import { Content, FunctionCall } from '@google/genai';
 
@@ -341,27 +343,54 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         let newAxiomAtoms: MemoryAtom[] = [];
         let newAxiomsForNarrative: string[] = [];
         
+        loggingService.log('DEBUG', 'Checking for axiom generation output', { 
+            workflowKeys: Object.keys(workflowOutputs),
+            hasAxiomKey: 'axiom_generation_default' in workflowOutputs,
+            axiomOutputType: typeof workflowOutputs['axiom_generation_default'],
+            axiomOutputLength: workflowOutputs['axiom_generation_default']?.length || 0
+        });
+        
         const axiomGenerationOutput = workflowOutputs['axiom_generation_default'];
         if (axiomGenerationOutput) {
+            loggingService.log('DEBUG', 'Axiom Generation output received', { outputPreview: String(axiomGenerationOutput).substring(0, 200) });
             try {
                 // Strip surrounding markdown code fences if present (```json ... ``` or ```) before attempting JSON.parse
                 let candidate = String(axiomGenerationOutput);
-                candidate = candidate.replace(/^```(?:json)?\s*/im, '').replace(/\s*```$/im, '').trim();
+                
+                // First, try to extract content between fences (handles trailing text after closing fence)
+                const fencedMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+                if (fencedMatch) {
+                    candidate = fencedMatch[1].trim();
+                    loggingService.log('DEBUG', 'Extracted content from fences', { candidatePreview: candidate.substring(0, 200) });
+                } else {
+                    // No fences found, strip any that might be at start/end only
+                    candidate = candidate.replace(/^```(?:json)?\s*/im, '').replace(/\s*```.*$/im, '').trim();
+                    loggingService.log('DEBUG', 'No fence match, stripped start/end', { candidatePreview: candidate.substring(0, 200) });
+                }
 
                 let parsed: any = null;
                 try {
                     parsed = JSON.parse(candidate);
+                    loggingService.log('DEBUG', 'JSON parsed successfully', { parsedType: Array.isArray(parsed) ? 'array' : typeof parsed, parsedKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [] });
                 } catch (inner) {
-                    // Fallback: try to capture a fenced json block explicitly
-                    const jsonString = axiomGenerationOutput.match(/```json\n([\s\S]*?)\n```/)?.[1] || candidate;
-                    parsed = JSON.parse(jsonString);
+                    loggingService.log('WARN', 'Initial JSON parse failed, trying fallback', { error: inner instanceof Error ? inner.message : String(inner) });
+                    // Last resort: try to find JSON array or object pattern
+                    const jsonMatch = candidate.match(/(\[[\s\S]*\])|(\{[\s\S]*\})/);
+                    if (jsonMatch) {
+                        parsed = JSON.parse(jsonMatch[0]);
+                        loggingService.log('DEBUG', 'JSON parsed via pattern match', { parsedType: Array.isArray(parsed) ? 'array' : typeof parsed });
+                    } else {
+                        throw new Error('No valid JSON found in axiom output');
+                    }
                 }
 
                 // Support two shapes: { axioms: [...] } and a top-level array of axioms
                 const parsedAxioms: any[] = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.axioms) ? parsed.axioms : []);
+                loggingService.log('DEBUG', 'Extracted axiom array', { count: parsedAxioms.length, axioms: parsedAxioms });
 
                 if (parsedAxioms.length > 0) {
                     for (const axiomData of parsedAxioms) {
+                        loggingService.log('DEBUG', 'Processing axiom candidate', { axiomData });
                         if (axiomData && axiomData.text && axiomData.id) {
                             newAxiomsForNarrative.push(axiomData.text);
                             const created = await memoryService.createAtom({
@@ -369,8 +398,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 isInContext: false, isCollapsed: false, activationScore: 1.0, lastActivatedAt: Date.now(), lastActivatedTurn: currentTurnRef.current
                             });
                             newAxiomAtoms.push(created);
+                            loggingService.log('DEBUG', 'Axiom atom created', { id: axiomData.id });
+                        } else {
+                            loggingService.log('WARN', 'Axiom candidate missing required fields', { axiomData });
                         }
                     }
+                } else {
+                    loggingService.log('WARN', 'No axioms found in parsed output', { parsed });
                 }
 
                 if (newAxiomAtoms.length > 0) {
@@ -386,7 +420,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                      }
                 }
             } catch(e: any) {
-                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: e?.toString ? e.toString() : e, stack: e?.stack, output: axiomGenerationOutput });
+                const errorDetails = { message: e?.message, name: e?.name, stack: e?.stack, raw: String(e) };
+                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: errorDetails, output: axiomGenerationOutput });
             }
         }
         
@@ -800,6 +835,26 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const newContext = isIncluded ? prev.filter(id => id !== fileId) : [...prev, fileId];
             const fileName = projectFiles.find(f => f.id === fileId)?.name;
             loggingService.log('DEBUG', 'Toggled project file context.', { fileName, fileId, included: !isIncluded });
+            // persist to contextTierManager
+            (async () => {
+                try {
+                    if (!isIncluded) {
+                        await contextTierManager.storeContextItem({
+                            id: `file_${fileId}`,
+                            text: projectFiles.find(f => f.id === fileId)?.content || '',
+                            tokens: Math.max(1, Math.ceil((projectFiles.find(f => f.id === fileId)?.content || '').length / 4)),
+                            timestamp: Date.now(),
+                            layerOrigin: 'CONSCIOUS' as any,
+                            tier: 'LIVE' as any,
+                            usageCount: 0
+                        } as any);
+                    } else {
+                        await contextTierManager.deleteContextItem(`file_${fileId}`);
+                    }
+                } catch (err) {
+                    loggingService.log('ERROR', 'Failed to persist project file context toggle', { error: err });
+                }
+            })();
             return newContext;
         });
     }, [projectFiles]);
@@ -827,6 +882,28 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     lastActivatedAt: Date.now(),
                 };
                 loggingService.log('DEBUG', 'Toggled message context.', { uuid, included: newInContext });
+                // persist to contextTierManager
+                (async () => {
+                    try {
+                        if (newInContext) {
+                            await contextTierManager.storeContextItem({
+                                id: m.uuid,
+                                text: m.text || '',
+                                tokens: Math.max(1, Math.ceil((m.text || '').length / 4)),
+                                timestamp: Date.now(),
+                                layerOrigin: 'CONSCIOUS' as any,
+                                tier: 'LIVE' as any,
+                                srgNodeIds: m.traceIds || [],
+                                usageCount: 0
+                            } as any);
+                        } else {
+                            await contextTierManager.deleteContextItem(m.uuid);
+                        }
+                    } catch (err) {
+                        loggingService.log('ERROR', 'Failed to persist message context toggle', { error: err });
+                    }
+                })();
+
                 return {
                     ...m,
                     isInContext: newInContext,
@@ -866,6 +943,87 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     const stopGeneration = useCallback(() => {
       stopGenerationRef.current = true;
       loggingService.log('WARN', 'Generation stopped by user.');
+    }, []);
+
+    const clearAllContexts = useCallback(async () => {
+        try {
+            await contextTierManager.clearAllContexts();
+            loggingService.log('INFO', 'Cleared all context data from DB.');
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to clear all context data.', { error: e });
+        }
+    }, []);
+
+    const clearAllTrapDoorStates = useCallback(async () => {
+        try {
+            await contextTierManager.clearAllTrapDoorStates();
+            loggingService.log('INFO', 'Cleared all trap door states from DB.');
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to clear trap door states.', { error: e });
+        }
+    }, []);
+
+    const getAllContextItems = useCallback(async () => {
+        try {
+            return await contextTierManager.getAllContextItems();
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to fetch all context items.', { error: e });
+            return [] as any[];
+        }
+    }, []);
+
+    const deleteContextItem = useCallback(async (id: string) => {
+        try {
+            // Non-destructive: move item to DEEP (set-aside) instead of deleting
+            await contextTierManager.moveItemToTier(id, 'DEEP');
+            loggingService.log('INFO', 'Moved context item to DEEP (set-aside)', { id });
+            // reflect removal from active context in local state
+            setMessages(prev => prev.map(m => m.uuid === id ? { ...m, isInContext: false } : m));
+            setContextFileIds(prev => prev.filter(fid => `file_${fid}` !== id));
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to delete context item', { error: e });
+        }
+    }, []);
+
+    // Workspace helpers
+    const createWorkspace = useCallback(async (name: string, itemIds: string[], fileIds?: string[], description?: string) => {
+        const id = `ws_${Date.now()}`;
+        try {
+            await contextTierManager.createWorkspace({ id, name, itemIds, fileIds, description });
+            loggingService.log('INFO', 'Created workspace', { id, name });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to create workspace', { error: e });
+        }
+    }, []);
+
+    const getWorkspaces = useCallback(async () => {
+        try {
+            return await contextTierManager.getWorkspaces();
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to fetch workspaces', { error: e });
+            return [] as any[];
+        }
+    }, []);
+
+    const loadWorkspace = useCallback(async (id: string) => {
+        try {
+            const ws = await contextTierManager.getWorkspace(id);
+            if (!ws) return;
+            // Move items referenced in workspace into LIVE tier (non-destructive)
+            for (const itemId of ws.itemIds || []) {
+                await contextTierManager.moveItemToTier(itemId, 'LIVE');
+            }
+            // Return workspace content for UI sync
+            const items = await contextTierManager.getAllContextItems();
+            const loadedItems = items.filter(i => (ws.itemIds || []).includes(i.id));
+            // update local UI: set messages' isInContext and contextFileIds
+            setMessages(prev => prev.map(m => loadedItems.find(li => li.id === m.uuid) ? { ...m, isInContext: true } : m));
+            if (ws.fileIds && ws.fileIds.length) setContextFileIds(prev => Array.from(new Set([...prev, ...ws.fileIds])));
+            await contextTierManager.saveWorkspace({ ...ws, lastUsedAt: Date.now() });
+            loggingService.log('INFO', 'Loaded workspace', { id });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to load workspace', { error: e });
+        }
     }, []);
     
     const totalContextTokens = useMemo(() => {
@@ -915,6 +1073,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         collapseAllMessages,
         expandAllMessages,
         clearChat,
+        clearAllContexts,
+        clearAllTrapDoorStates,
+        getAllContextItems,
+        deleteContextItem,
+        createWorkspace,
+        getWorkspaces,
+        loadWorkspace,
         aiSettings,
         setAiSettings,
         isCognitionRunning,

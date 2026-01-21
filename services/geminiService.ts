@@ -146,7 +146,7 @@ async function* openAIGenerateStream(model: string, contents: Content[], systemI
         throw new Error(`Base URL for provider ${provider} is not configured.`);
     }
     const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
-    
+
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
         if (!providerSettings.apiKey) throw new Error(`${provider.charAt(0).toUpperCase() + provider.slice(1)} API key is missing.`);
@@ -175,7 +175,7 @@ async function* openAIGenerateStream(model: string, contents: Content[], systemI
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
+
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -218,7 +218,7 @@ async function openAIGenerateText(model: string, contents: Content[], systemInst
     const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-     if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
+    if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
         if (!providerSettings.apiKey) throw new Error(`${provider.charAt(0).toUpperCase() + provider.slice(1)} API key is missing.`);
         headers['Authorization'] = `Bearer ${providerSettings.apiKey}`;
     }
@@ -253,10 +253,10 @@ async function openAIGenerateText(model: string, contents: Content[], systemInst
 export const sendMessageToGemini = async (contents: Content[], systemInstruction: string, withTools: boolean, roleSetting: RoleSetting, providers: AISettings['providers']): Promise<AsyncGenerator<GenerateContentResponse>> => {
     const { selectedModel: model, provider } = roleSetting;
     const providerSettings = providers[provider];
-    
-    loggingService.log('INFO', '=== sendMessageToGemini DEBUG ===', { 
-        provider, 
-        model, 
+
+    loggingService.log('INFO', '=== sendMessageToGemini DEBUG ===', {
+        provider,
+        model,
         withTools,
         availableProviders: Object.keys(providers),
         hasProviderSettings: !!providerSettings,
@@ -287,12 +287,20 @@ export const sendMessageToGemini = async (contents: Content[], systemInstruction
 export const generateText = async (prompt: string, systemInstruction: string, roleSetting: RoleSetting, providers: AISettings['providers']): Promise<string> => {
     const { selectedModel: model, provider } = roleSetting;
     const providerSettings = providers[provider];
-    
+
     if (!model) {
         loggingService.log('WARN', `generateText called with no model for a role`, { provider: provider });
-        return ""; // Return empty string if no model is provided to prevent API errors
+        throw new Error(`No model configured for provider "${provider}". Please configure the Workflow Designer with a valid model.`);
     }
-    
+
+    // Validate model is in the list of available models
+    const availableModels = providerSettings.identifiers.split('\n').map(m => m.trim()).filter(Boolean);
+    if (!availableModels.includes(model)) {
+        const errorMsg = `Invalid model "${model}" for provider "${provider}". Available models: ${availableModels.join(', ')}. Please update your Workflow Designer settings.`;
+        loggingService.log('ERROR', errorMsg, { model, provider, availableModels });
+        throw new Error(errorMsg);
+    }
+
     const contents: Content[] = [{ role: 'user', parts: [{ text: prompt }] }];
     loggingService.log('DEBUG', 'generateText called', { model, provider });
 
@@ -303,7 +311,7 @@ export const generateText = async (prompt: string, systemInstruction: string, ro
         const response = await ai.models.generateContent({
             model,
             contents,
-            config: { 
+            config: {
                 systemInstruction,
             },
         });
@@ -314,12 +322,12 @@ export const generateText = async (prompt: string, systemInstruction: string, ro
 };
 
 export interface WebSearchResult {
-  text: string;
-  sources: { web: { uri: string; title: string } }[];
+    text: string;
+    sources: { web: { uri: string; title: string } }[];
 }
 
-// FIX: Updated signature to accept roleSetting for provider-aware search
-export const performWebSearch = async (query: string, roleSetting: RoleSetting, providers: AISettings['providers']): Promise<WebSearchResult | null> => {
+// FIX: Updated signature to accept AISettings to get playwrightSearchUrl
+export const performWebSearch = async (query: string, roleSetting: RoleSetting, providers: AISettings['providers'], aiSettings?: AISettings): Promise<WebSearchResult | null> => {
     const provider = roleSetting.provider;
     loggingService.log('DEBUG', 'Performing web search', { query, provider });
     if (provider === 'gemini') {
@@ -331,15 +339,15 @@ export const performWebSearch = async (query: string, roleSetting: RoleSetting, 
                 tools: [{ googleSearch: {} }],
             },
         });
-        
+
         const insightText = response.text;
         const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-        
+
         const sources = groundingChunks
-            .filter((chunk): chunk is { web: { uri: string; title: string } } => 
+            .filter((chunk): chunk is { web: { uri: string; title: string } } =>
                 !!chunk && !!chunk.web?.uri
             )
-            .map(chunk => ({ web: { uri: chunk.web.uri, title: chunk.web.title || chunk.web.uri }}));
+            .map(chunk => ({ web: { uri: chunk.web.uri, title: chunk.web.title || chunk.web.uri } }));
 
         return { text: insightText, sources };
 
@@ -370,16 +378,43 @@ export const performWebSearch = async (query: string, roleSetting: RoleSetting, 
                 return { text: errorText, sources: [] };
             }
         }
-        // If no webSearchApiUrl, inform about built-in search for certain providers
-        else if (provider === 'fireworks' || provider === 'perplexity' || provider === 'grok') {
-            const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
-            const errorText = `Explicit web search is not supported for the ${providerName} provider in this application. However, some models (e.g., Perplexity's 'online' models or Grok) have built-in web access. AI-driven search queries for this provider will be ignored.`;
-            loggingService.log('WARN', errorText);
-            return { text: errorText, sources: [] };
-        }
+        // Fallback: Use Playwright search server for ANY provider without native search
         else {
-            loggingService.log('WARN', `No web search configured for provider: ${provider}`);
-            return null;
+            const playwrightUrl = aiSettings?.playwrightSearchUrl || 'http://localhost:3000';
+            loggingService.log('INFO', `Provider ${provider} has no native search - using Playwright at ${playwrightUrl}`);
+
+            try {
+                const searchEndpoint = `${playwrightUrl.replace(/\/+$/, '')}/search`;
+
+                const response = await fetch(searchEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, maxResults: 5 }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Playwright search error: ${response.status} ${response.statusText}`);
+                }
+
+                const results = await response.json();
+
+                if (!results || results.length === 0) {
+                    return { text: 'No search results found.', sources: [] };
+                }
+
+                const formattedText = results.map((r: any, idx: number) =>
+                    `[${idx + 1}] ${r.title}\n${r.url}\n${r.snippet}\n`
+                ).join('\n');
+
+                const sources = results.map((r: any) => ({ web: { uri: r.url, title: r.title } }));
+
+                loggingService.log('INFO', `Playwright search returned ${results.length} results`);
+                return { text: formattedText, sources };
+
+            } catch (e: any) {
+                loggingService.log('ERROR', 'Playwright search failed', { error: e.message });
+                return { text: `Web search failed: ${e.message}`, sources: [] };
+            }
         }
     }
 };
@@ -408,11 +443,11 @@ export const integrateNarrative = async (currentNarrative: string, newAxioms: st
         loggingService.log('WARN', 'integrateNarrative called with USER_NARRATIVE source. Ignoring - user narrative is not the core story.');
         return currentNarrative; // Return unchanged
     }
-    
+
     let prompt = NARRATIVE_INTEGRATION_PROMPT.replace('{CURRENT_NARRATIVE}', currentNarrative || 'This is the beginning of my story.');
     prompt = prompt.replace('{NEW_AXIOMS}', newAxioms.join('\n'));
     prompt = prompt.replace('{CURRENT_DATETIME}', new Date().toISOString());
-    
+
     if (!roleSetting.selectedModel) {
         loggingService.log('WARN', 'integrateNarrative called with no model.');
         return currentNarrative;

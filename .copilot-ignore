@@ -1,0 +1,5 @@
+# Blacklist folders for Copilot/code agents
+src/**
+src-disabled/**
+12.9.25-6.10pm/**
+junkdrawer/**

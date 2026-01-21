@@ -542,6 +542,13 @@ function App() {
                       onRunCognitionNow={chat.runCognitionCycleNow}
                       rcb={chat.rcb}
                       onRcbSizeLimitChange={chat.onRcbSizeLimitChange}
+                      onClearAllContexts={chat.clearAllContexts}
+                      onClearAllTrapDoorStates={chat.clearAllTrapDoorStates}
+                      onFetchAllContextItems={chat.getAllContextItems}
+                      onDeleteContextItem={chat.deleteContextItem}
+                      onCreateWorkspace={chat.createWorkspace}
+                      onGetWorkspaces={chat.getWorkspaces}
+                      onLoadWorkspace={chat.loadWorkspace}
                       onViewTrace={handleViewTrace}
                   />
               </div>

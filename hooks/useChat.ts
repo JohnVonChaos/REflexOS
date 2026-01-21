@@ -11,6 +11,8 @@ import { extractCodeBlocksFromText } from '../services/codeBlockParser';
 import { loggingService } from '../services/loggingService';
 import { graphService } from '../services/graphService';
 import { srgService } from '../services/srgService';
+import { scratchpadService } from '../services/scratchpad';
+import { contextTierManager } from '../services/contextTierManager';
 import { Content, FunctionCall } from '@google/genai';
 
 // Helper function to map 1-10 strength to a number of turns based on Fibonacci.
@@ -19,7 +21,7 @@ const mapStrengthToTurns = (strength: number): number => {
     if (strength >= 10) return -1; // Permanent
     if (strength <= 0) return 0; // De-orbit immediately
     if (strength < fibMap.length) return fibMap[strength];
-    return fibMap[fibMap.length-1]; // Default to max if out of bounds
+    return fibMap[fibMap.length - 1]; // Default to max if out of bounds
 };
 
 // --- Fibonacci Decay Logic ---
@@ -27,7 +29,7 @@ const fibCache = new Map<number, number>();
 function fibonacci(n: number): number {
     if (n <= 1) return 1;
     if (fibCache.has(n)) return fibCache.get(n)!;
-    const limitedN = Math.min(n, 40); 
+    const limitedN = Math.min(n, 40);
     const result = fibonacci(limitedN - 1) + fibonacci(limitedN - 2);
     fibCache.set(limitedN, result);
     return result;
@@ -52,10 +54,10 @@ const initializeRCB = (): RunningContextBuffer => ({
 });
 
 const uuidv4 = () => {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
 }
 
 export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) => {
@@ -83,7 +85,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     const isLoadingRef = useRef(isLoading);
     const isCognitionRunningRef = useRef(isCognitionRunning);
     const rcbRef = useRef(rcb);
-    
+
     useEffect(() => {
         messagesRef.current = messages;
         projectFilesRef.current = projectFiles;
@@ -122,14 +124,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const newIds = oldNames
                 .map(name => nameToIdMap.get(name))
                 .filter((id): id is string => !!id);
-            
+
             loggingService.log('DEBUG', 'Loading session with backwards compatibility for contextFileNames', {
                 oldNames,
                 availableFileNames: Array.from(nameToIdMap.keys()),
                 mappedIds: newIds,
                 mappingSuccess: newIds.length === oldNames.length
             });
-            
+
             setContextFileIds(Array.from(new Set(newIds)));
         } else {
             setContextFileIds([]);
@@ -137,7 +139,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
         setContextGeneratedFileNames(state.contextGeneratedFileNames || []);
         setSelfNarrative(state.selfNarrative || '');
-        
+
         const defaultSettings = getDefaultSettings();
         const loadedSettings = state.aiSettings;
         if (loadedSettings) {
@@ -180,7 +182,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     ...(loadedSettings.srg?.traversal || {})
                 },
                 display: {
-                     ...defaultSettings.srg.display,
+                    ...defaultSettings.srg.display,
                     ...(loadedSettings.srg?.display || {})
                 }
             };
@@ -203,7 +205,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     return defaultStage;
                 });
             }
-            
+
             setAiSettings(mergedSettings);
         } else {
             setAiSettings(defaultSettings);
@@ -214,7 +216,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         } else {
             setRcb(initializeRCB());
         }
-        
+
         loggingService.log('INFO', 'Session state loaded from file.');
     }, []);
 
@@ -229,7 +231,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 currentTurnRef.current = (state.messages || []).filter(m => m.type === 'user_message').length;
                 loggingService.log('INFO', 'Session loaded successfully.', { messageCount: state.messages?.length });
             } else {
-                 loggingService.log('INFO', 'No session found, starting fresh.');
+                loggingService.log('INFO', 'No session found, starting fresh.');
             }
         };
         load();
@@ -241,14 +243,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         const state: SessionState = { messages, projectFiles, contextFileIds, contextGeneratedFileNames, selfNarrative, aiSettings, rcb, graphState };
         sessionService.saveSession(state);
     }, [messages, projectFiles, contextFileIds, contextGeneratedFileNames, selfNarrative, aiSettings, rcb, isReady]);
-    
-    
+
+
     // --- Autonomous Workflow Cycles (New System) ---
     useEffect(() => {
         if (!isReady) return;
-        
+
         const activeTimers: ReturnType<typeof setInterval>[] = [];
-        
+
         // Set up timers for each workflow stage that has autonomous cycles enabled
         aiSettings.workflow.forEach(stage => {
             if (stage.enabled && stage.enableTimedCycle && stage.timerSeconds && stage.timerSeconds > 0) {
@@ -257,10 +259,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         loggingService.log('WARN', `Skipping autonomous cycle for ${stage.name}: another process is running.`);
                         return;
                     }
-                    
+
                     await runAutonomousWorkflowCycle(stage);
                 }, stage.timerSeconds * 1000);
-                
+
                 activeTimers.push(intervalId);
                 loggingService.log('INFO', `Autonomous cycle started for ${stage.name} (every ${stage.timerSeconds}s)`);
             }
@@ -275,14 +277,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         loggingService.log('INFO', `Autonomous cycle triggered for: ${stage.name}`);
         setIsCognitionRunning(true);
         setError(null);
-        
+
         try {
             const currentMessages = messagesRef.current;
             const contextMessagesForPayload = currentMessages.filter(m => m.isInContext);
             const recentHistory = contextMessagesForPayload.filter(m => m.type === 'user_message' || m.type === 'model_response').slice(-10);
             const allBackgroundInsights = currentMessages.filter((m): m is MemoryAtom & { backgroundInsight: BackgroundInsight } => m.type === 'steward_note' && !!m.backgroundInsight);
             const contextProjectFiles = projectFilesRef.current.filter(f => contextFileIdsRef.current.includes(f.id));
-            
+
             // Build context packets - respect what the context manager has marked as relevant
             const baseContextPackets = {
                 USER_QUERY: recentHistory.filter(m => m.role === 'user').slice(-1)[0]?.text || 'No recent user query.',
@@ -320,16 +322,17 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             }
 
             const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
-            
+
             // DISABLED: Mid-workflow trap-door - was truncating outputs
             // if (estimatedTokens > tokenLimit * 0.9) { ... } - DISABLED
-            
+
             // Continue with stage execution (trap-door disabled)
+            const stageOutput = await generateText(stagePrompt, stage.systemPrompt, roleSetting, aiSettingsRef.current.providers);
 
             // If web search is enabled, try to extract a search query and perform search
             if (stage.enableWebSearch) {
                 let searchQuery = '';
-                
+
                 // Try to parse JSON response first
                 try {
                     const jsonMatch = stageOutput.match(/```json\n([\s\S]*?)\n```/)?.[1];
@@ -346,9 +349,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                 if (searchQuery) {
                     loggingService.log('INFO', `${stage.name} generated search query: "${searchQuery}"`);
-                    
-                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers);
-                    
+
+                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
+
                     if (searchResult && searchResult.text) {
                         const newAtom: MemoryAtom = {
                             uuid: uuidv4(),
@@ -370,13 +373,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             orbitalStrength: 7,
                             orbitalDecayTurns: mapStrengthToTurns(7),
                         };
-                        
+
                         setMessages(prev => {
                             const updated = [...prev, newAtom];
                             messagesRef.current = updated;
                             return updated;
                         });
-                        
+
                         // FIX: Update RCB to reflect the research activity
                         const consciousRole = aiSettingsRef.current.roles.conscious;
                         if (consciousRole.enabled && rcbRef.current) {
@@ -393,7 +396,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 loggingService.log('ERROR', `Failed to update RCB after ${stage.name}`, { error: e });
                             }
                         }
-                        
+
                         loggingService.log('INFO', `${stage.name} autonomous cycle successful, new insight created.`);
                     } else {
                         loggingService.log('WARN', `${stage.name}: Search returned no results.`);
@@ -408,21 +411,21 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
         } catch (e: any) {
             loggingService.log('ERROR', `Autonomous cycle failed for ${stage.name}`, { error: e.toString() });
-            
+
             // FIX: Auto-retry with trap door if it's a context overflow error
             const isContextError = (
                 (e.message && (e.message.includes('400') || e.message.includes('context') || e.message.includes('token'))) ||
                 (e.message && (e.message.includes('413') || e.message.includes('payload too large')))
             );
             const contextRoleSetting = aiSettingsRef.current.roles.context;
-            
+
             if (isContextError && contextRoleSetting.enabled) {
                 loggingService.log('WARN', `${stage.name}: Detected context overflow. Applying trap door...`);
-                
+
                 try {
                     const currentMessages = messagesRef.current;
                     const contextMessagesForPayload = currentMessages.filter(m => m.isInContext);
-                    
+
                     // Trap door: Remove weak+old orbitals, but NEVER the first message (anchor)
                     const orbitalsToDecay = contextMessagesForPayload
                         .filter((m, idx) => idx > 0 && m.orbitalStrength !== undefined && m.orbitalStrength !== null) // Skip first message
@@ -433,16 +436,16 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             return a.timestamp - b.timestamp;
                         })
                         .slice(0, Math.ceil(contextMessagesForPayload.length * 0.3));
-                    
+
                     const itemsToRemove = orbitalsToDecay.map(m => m.uuid);
-                    
+
                     if (itemsToRemove.length > 0) {
-                        setMessages(prev => prev.map(m => 
+                        setMessages(prev => prev.map(m =>
                             itemsToRemove.includes(m.uuid)
                                 ? { ...m, isInContext: false, orbitalDecayTurns: null, orbitalStrength: null }
                                 : m
                         ));
-                        
+
                         loggingService.log('INFO', `Trap door: Set ${itemsToRemove.length} weak+old orbital items out-of-context. Orbital manager will re-evaluate post-turn.`);
                     } else {
                         loggingService.log('WARN', `${stage.name}: No low-priority orbitals to set out-of-context.`);
@@ -471,14 +474,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             loggingService.log('WARN', 'Skipping background cognition: another process is running.');
             return;
         }
-        
+
         loggingService.log('INFO', `Background cognition cycle triggered ${isManual ? '(manually)' : '(scheduled)'}.`);
         setIsCognitionRunning(true);
         setError(null);
         try {
             const contextFileNamesForCycle = projectFilesRef.current.filter(f => contextFileIdsRef.current.includes(f.id)).map(f => f.name);
             const currentMessages = messagesRef.current;
-            
+
             // Build context packets for background cognition using the same system as main workflow
             const contextMessagesForPayload = currentMessages.filter(m => m.isInContext);
             const recentHistory = contextMessagesForPayload.filter(m => m.type === 'user_message' || m.type === 'model_response').slice(-3);
@@ -486,29 +489,43 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const inContextBackgroundInsights = contextMessagesForPayload.filter((m): m is MemoryAtom & { backgroundInsight: BackgroundInsight } => m.type === 'steward_note' && !!m.backgroundInsight);
             const contextProjectFiles = projectFilesRef.current.filter(f => contextFileIdsRef.current.includes(f.id));
             const existingAxioms = currentMessages
-              .flatMap(m => m.type === 'axiom' ? [m] : (m.cognitiveTrace?.filter(t => t.type === 'axiom') || []))
-              .map(a => `- ${a.text}`)
-              .join('\n') || 'None.';
-            
+                .flatMap(m => m.type === 'axiom' ? [m] : (m.cognitiveTrace?.filter(t => t.type === 'axiom') || []))
+                .map(a => `- ${a.text}`)
+                .join('\n') || 'None.';
+
             // Build a list of ALL recent queries (last 10) including decayed ones - so AI knows what it already researched
             const allRecentBackgroundQueries = currentMessages
                 .filter((m): m is MemoryAtom & { backgroundInsight: BackgroundInsight } => m.type === 'steward_note' && !!m.backgroundInsight)
                 .slice(-10)
                 .map(atom => atom.backgroundInsight!.query)
                 .join('\n- ');
-            
-            // Collect all recent queries (last 10) for deduplication check
+
+            // Collect all recent queries (last 3) for deduplication check
             const allRecentQueriesLowercase = currentMessages
                 .filter((m): m is MemoryAtom & { backgroundInsight: BackgroundInsight } => m.type === 'steward_note' && !!m.backgroundInsight)
-                .slice(-10)
+                .slice(-3)
                 .map(atom => atom.backgroundInsight!.query.toLowerCase().trim());
-            
+
+            // Fetch recent scratchpad entries (Internal Monologue)
+            let scratchpadContent = '';
+            try {
+                // We access the service directly here as it's a singleton
+                // Note: In a stricter React architecture we might want to use a hook, but this is inside an async handler
+                const recentScratchpad = await scratchpadService.getRecentEntries(10);
+                if (recentScratchpad.length > 0) {
+                    scratchpadContent = `\n\n[INTERNAL MONOLOGUE (RECENT SCRATCHPAD ACTIVITY)]\n` +
+                        recentScratchpad.map(e => `[${e.role}::${e.actionType}] ${typeof e.content === 'string' ? e.content : JSON.stringify(e.content)}`).join('\n\n');
+                }
+            } catch (e) {
+                console.warn('Failed to fetch scratchpad for context', e);
+            }
+
             const baseContextPackets = {
                 RCB: JSON.stringify(rcbRef.current, null, 2),
                 RECENT_HISTORY: recentHistory.map(m => `${m.role}: ${m.text}`).join('\n'),
-                BACKGROUND_INSIGHTS: inContextBackgroundInsights.length > 0 
+                BACKGROUND_INSIGHTS: (inContextBackgroundInsights.length > 0
                     ? `QUERIES ALREADY RESEARCHED (avoid duplicating these):\n- ${allRecentBackgroundQueries}\n\nRESEARCH RESULTS:\n` + inContextBackgroundInsights.map(atom => `[Query: "${atom.backgroundInsight!.query}"]\n${atom.backgroundInsight!.insight}`).join('\n\n')
-                    : `QUERIES ALREADY RESEARCHED (avoid duplicating these):\n- ${allRecentBackgroundQueries || '(none yet)'}\n\nNo research results in current context.`,
+                    : `QUERIES ALREADY RESEARCHED (avoid duplicating these):\n- ${allRecentBackgroundQueries || '(none yet)'}\n\nNo research results in current context.`) + scratchpadContent,
                 CONTEXT_FILES: contextProjectFiles.map(f => `--- FILE: ${f.name} ---\n${f.content}`).join('\n\n') || 'None.',
                 RECALLED_AXIOMS: existingAxioms,
                 CORE_NARRATIVE: selfNarrativeRef.current || 'None.',
@@ -521,14 +538,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 selfNarrative: selfNarrativeRef.current,
                 rcb: rcbRef.current,
                 baseContextPackets,
-            }, backgroundRoleSetting, currentSettings.providers, backgroundWorkflowStage, allRecentQueriesLowercase);
+            }, backgroundRoleSetting, currentSettings.providers, currentSettings.backgroundWorkflow, backgroundWorkflowStage, []);
 
-            // Deduplication check already happened in the service, but double-check here
-            if (insight && allRecentQueriesLowercase.includes(insight.query.toLowerCase().trim())) {
-                loggingService.log('ERROR', `CRITICAL: Duplicate query slipped through: "${insight.query}" - this should not happen!`);
-                return;
-            }
-            
             if (insight) {
                 const newAtom: MemoryAtom = {
                     uuid: uuidv4(),
@@ -555,7 +566,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             }
         } catch (e: any) {
             loggingService.log('ERROR', 'Background Cognition Cycle failed.', { error: e.toString(), stack: e.stack });
-            
+
             // Expanded error detection: Catch context overflow AND Fireworks 413 Payload Too Large
             const errorString = (e.toString() + (e.message || '')).toLowerCase();
             const isContextError = (
@@ -563,17 +574,17 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 (errorString.includes('exceed') || errorString.includes('limit') || errorString.includes('too') || errorString.includes('large') || errorString.includes('too large'))
             ) || errorString.includes('token_limit_exceeded') || errorString.includes('413') || errorString.includes('payload too large');
             const contextRoleSetting = aiSettingsRef.current.roles.context;
-            
+
             if (isContextError && contextRoleSetting.enabled) {
                 loggingService.log('WARN', 'Context overflow detected (buffer/context + exceed/limit keywords). Triggering intelligent pruning and will retry in next cycle.');
-                
+
                 try {
                     const currentMessages = messagesRef.current;
-                    
+
                     // First pass: Intelligent orbital decay - remove low-priority OLD orbitals
                     // CRITICAL: Never remove the first message (it's the anchor)
                     const messagesToRemove: string[] = [];
-                    
+
                     // Sort by age (oldest first) and prioritize items with low orbitalStrength
                     const orbitalsToConsider = currentMessages
                         .filter((m, idx) => idx > 0 && m.isInContext && m.orbitalStrength !== undefined && m.orbitalStrength !== null) // Skip first message
@@ -586,13 +597,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             return a.timestamp - b.timestamp;
                         })
                         .slice(0, Math.ceil(currentMessages.length * 0.25)); // Target removing 25% of orbital items first
-                    
+
                     for (const msg of orbitalsToConsider) {
                         messagesToRemove.push(msg.uuid);
                     }
-                    
+
                     loggingService.log('DEBUG', `Intelligent orbital decay: Removing ${messagesToRemove.length} low-priority orbital messages from oldest turns`);
-                    
+
                     // Apply the orbital decay immediately
                     setMessages(prev => {
                         const updated = prev.map(m =>
@@ -603,17 +614,17 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         messagesRef.current = updated;
                         return updated;
                     });
-                    
+
                     // Retry immediately without waiting
                     loggingService.log('INFO', 'Trap door: Set weak+old orbitals out-of-context. Orbital manager will re-evaluate next cycle.');
                     return; // Exit gracefully, will retry on next scheduled turn
-                    
+
                 } catch (decayError) {
                     loggingService.log('ERROR', 'Intelligent orbital decay failed', { error: decayError });
                     // Continue to error handling below, don't set error yet
                 }
             }
-            
+
             // Handle other error types (not context-related)
             let friendlyError = e;
             try {
@@ -648,8 +659,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
         return () => clearInterval(intervalId);
     }, [isReady, aiSettings.backgroundCognitionRate, aiSettings.roles.background.enabled, runCognitionCycleNow]);
-    
-    
+
+    // Manual trigger listener removed (moved to App.tsx to use runDualProcessCycleNow)
+
+
     // --- "Out of Step" Learning Cycle ---
     const runPostTurnCycle = useCallback(async (completedTurnMessages: MemoryAtom[], workflowOutputs: Record<string, string>) => {
         loggingService.log('INFO', 'Post-turn learning cycle started.');
@@ -658,7 +671,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             if (
                 completedTurnMessages[i].role === 'model' &&
                 !completedTurnMessages[i].isLearnedFrom &&
-                completedTurnMessages[i-1].role === 'user'
+                completedTurnMessages[i - 1].role === 'user'
             ) {
                 lastModelAtomIndex = i;
                 break;
@@ -666,12 +679,12 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         }
 
         if (lastModelAtomIndex === -1) {
-             loggingService.log('DEBUG', 'No new turn to learn from, running context management only.');
+            loggingService.log('DEBUG', 'No new turn to learn from, running context management only.');
         }
-        
+
         const lastModelAtom = lastModelAtomIndex !== -1 ? completedTurnMessages[lastModelAtomIndex] : null;
 
-        let messagesWithLearnedFlag = lastModelAtom 
+        let messagesWithLearnedFlag = lastModelAtom
             ? completedTurnMessages.map(m => m.uuid === lastModelAtom.uuid ? { ...m, isLearnedFrom: true } : m)
             : completedTurnMessages;
 
@@ -683,48 +696,91 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
         let newAxiomAtoms: MemoryAtom[] = [];
         let newAxiomsForNarrative: string[] = [];
-        
+
+        loggingService.log('DEBUG', 'Checking for axiom generation output', {
+            workflowKeys: Object.keys(workflowOutputs),
+            hasAxiomKey: 'axiom_generation_default' in workflowOutputs,
+            axiomOutputType: typeof workflowOutputs['axiom_generation_default'],
+            axiomOutputLength: workflowOutputs['axiom_generation_default']?.length || 0
+        });
+
         const axiomGenerationOutput = workflowOutputs['axiom_generation_default'];
         if (axiomGenerationOutput) {
+            loggingService.log('DEBUG', 'Axiom Generation output received', { outputPreview: String(axiomGenerationOutput).substring(0, 200) });
             try {
-                const jsonString = axiomGenerationOutput.match(/```json\n([\s\S]*?)\n```/)?.[1];
-                if (jsonString) {
-                    const parsed = JSON.parse(jsonString);
-                    if (parsed.axioms && Array.isArray(parsed.axioms)) {
-                        for (const axiomData of parsed.axioms) {
-                            if (axiomData.text && axiomData.id) {
-                                newAxiomsForNarrative.push(axiomData.text);
-                                newAxiomAtoms.push({
-                                    uuid: uuidv4(),
-                                    timestamp: Date.now(),
-                                    role: 'model',
-                                    type: 'axiom',
-                                    text: axiomData.text,
-                                    axiomId: axiomData.id,
-                                    isInContext: false,
-                                    isCollapsed: false,
-                                    activationScore: 1.0,
-                                    lastActivatedAt: Date.now(),
-                                    lastActivatedTurn: currentTurnRef.current,
-                                    orbitalDecayTurns: undefined,
-                                });
-                            }
-                        }
+                // Robust fence extraction (handles trailing commentary)
+                let candidate = String(axiomGenerationOutput);
+                const fencedMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+                if (fencedMatch) {
+                    candidate = fencedMatch[1].trim();
+                    loggingService.log('DEBUG', 'Extracted content from fences', { candidatePreview: candidate.substring(0, 200) });
+                } else {
+                    candidate = candidate.replace(/^```(?:json)?\s*/im, '').replace(/\s*```.*$/im, '').trim();
+                    loggingService.log('DEBUG', 'No fence match, stripped start/end', { candidatePreview: candidate.substring(0, 200) });
+                }
+
+                let parsed: any = null;
+                try {
+                    parsed = JSON.parse(candidate);
+                    loggingService.log('DEBUG', 'JSON parsed successfully', { parsedType: Array.isArray(parsed) ? 'array' : typeof parsed, parsedKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed) : [] });
+                } catch (inner) {
+                    loggingService.log('WARN', 'Initial JSON parse failed, trying fallback', { error: inner instanceof Error ? inner.message : String(inner) });
+                    const jsonMatch = candidate.match(/(\[[\s\S]*\])|(\{[\s\S]*\})/);
+                    if (jsonMatch) {
+                        parsed = JSON.parse(jsonMatch[0]);
+                        loggingService.log('DEBUG', 'JSON parsed via pattern match', { parsedType: Array.isArray(parsed) ? 'array' : typeof parsed });
+                    } else {
+                        throw new Error('No valid JSON found in axiom output');
                     }
                 }
-                if (newAxiomAtoms.length > 0) {
-                     loggingService.log('INFO', 'Parsed emergent axioms from Axiom Generation stage.', { axioms: newAxiomAtoms });
+
+                // Support both { axioms: [...] } AND top-level array formats
+                const parsedAxioms: any[] = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.axioms) ? parsed.axioms : []);
+                loggingService.log('DEBUG', 'Extracted axiom array', { count: parsedAxioms.length, axioms: parsedAxioms });
+
+                if (parsedAxioms.length > 0) {
+                    for (const axiomData of parsedAxioms) {
+                        loggingService.log('DEBUG', 'Processing axiom candidate', { axiomData });
+                        if (axiomData && axiomData.text && axiomData.id) {
+                            newAxiomsForNarrative.push(axiomData.text);
+                            const newAxiomAtom: MemoryAtom = {
+                                uuid: uuidv4(),
+                                timestamp: Date.now(),
+                                role: 'model',
+                                type: 'axiom',
+                                text: axiomData.text,
+                                axiomId: axiomData.id,
+                                isInContext: false,
+                                isCollapsed: false,
+                                activationScore: 1.0,
+                                lastActivatedAt: Date.now(),
+                                lastActivatedTurn: currentTurnRef.current,
+                                orbitalDecayTurns: undefined,
+                            };
+                            newAxiomAtoms.push(newAxiomAtom);
+                            loggingService.log('DEBUG', 'Axiom atom created', { id: axiomData.id, uuid: newAxiomAtom.uuid });
+                        } else {
+                            loggingService.log('WARN', 'Axiom candidate missing required fields', { axiomData });
+                        }
+                    }
+                } else {
+                    loggingService.log('WARN', 'No axioms found in parsed output', { parsed });
                 }
-            } catch(e) {
-                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: e, output: axiomGenerationOutput });
+
+                if (newAxiomAtoms.length > 0) {
+                    loggingService.log('INFO', 'Parsed emergent axioms from Axiom Generation stage.', { axioms: newAxiomAtoms });
+                }
+            } catch (e: any) {
+                const errorDetails = { message: e?.message, name: e?.name, stack: e?.stack, raw: String(e), type: typeof e };
+                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: errorDetails, output: axiomGenerationOutput });
             }
         }
-        
+
         const projectedMessagesWithNewAxioms = [...messagesWithLearnedFlag, ...newAxiomAtoms];
-        
+
         let contextCommands: { setOrbits: { uuid: string; strength: number; }[], deorbitUuids: string[] } = { setOrbits: [], deorbitUuids: [] };
         const contextRoleSetting = aiSettingsRef.current.roles.context;
-        if(contextRoleSetting.enabled) {
+        if (contextRoleSetting.enabled) {
             contextCommands = await contextService.manageOrbits(projectedMessagesWithNewAxioms, contextRoleSetting, aiSettingsRef.current.providers);
             loggingService.log('DEBUG', 'Context manager returned commands', { contextCommands });
         }
@@ -732,14 +788,14 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         let finalMessages = projectedMessagesWithNewAxioms.map(m => {
             let updatedAtom = { ...m };
             const setOrbitCmd = contextCommands.setOrbits.find(cmd => cmd.uuid === m.uuid);
-            if(setOrbitCmd) {
+            if (setOrbitCmd) {
                 updatedAtom.isInContext = true;
                 updatedAtom.orbitalStrength = setOrbitCmd.strength;
                 updatedAtom.orbitalDecayTurns = mapStrengthToTurns(setOrbitCmd.strength);
                 updatedAtom.lastActivatedTurn = currentTurnRef.current;
                 updatedAtom.lastActivatedAt = Date.now();
             }
-            if(contextCommands.deorbitUuids.includes(m.uuid)) {
+            if (contextCommands.deorbitUuids.includes(m.uuid)) {
                 updatedAtom.isInContext = false;
                 updatedAtom.orbitalDecayTurns = null;
                 updatedAtom.orbitalStrength = null;
@@ -753,15 +809,15 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             newNarrative = await integrateNarrative(selfNarrativeRef.current, newAxiomsForNarrative, narrativeRoleSetting, aiSettingsRef.current.providers);
             loggingService.log('INFO', 'Narrative integrated', { newNarrative });
         }
-        
-         loggingService.log('INFO', 'Post-turn learning cycle complete.');
-         return { updatedMessages: finalMessages, newNarrative };
+
+        loggingService.log('INFO', 'Post-turn learning cycle complete.');
+        return { updatedMessages: finalMessages, newNarrative };
     }, []);
 
     const updateRcbAfterTurn = useCallback(async (lastTurnAtoms: MemoryAtom[]) => {
         const consciousRole = aiSettingsRef.current.roles.conscious;
         if (!consciousRole.enabled) return;
-        
+
         loggingService.log('DEBUG', 'Updating Running Context Buffer (RCB)...');
         setLoadingStage('Reflecting on turn...');
         try {
@@ -797,7 +853,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         setLoadingStage('Initializing...');
         setError(null);
         stopGenerationRef.current = false;
-        
+
         currentTurnRef.current += 1;
         setLoadingStage('Managing memory decay...');
         let messagesAfterDecay = messagesRef.current.map(m => {
@@ -823,10 +879,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             text: messageText, isInContext: true, isCollapsed: false,
             activationScore: 1.0, lastActivatedTurn: currentTurnRef.current, lastActivatedAt: Date.now(),
         };
-        
+
         let messagesForThisTurn = [...messagesAfterDecay, userAtom];
         setMessages(messagesForThisTurn);
-        
+
         let finalModelAtom: MemoryAtom | null = null;
         const workflowOutputs: Record<string, string> = {};
         const cognitiveTrace: MemoryAtom[] = [];
@@ -856,7 +912,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const recentMessagesToIngest = messagesForThisTurn
                 .filter(m => (m.type === 'user_message' || m.type === 'model_response') && m.text.length > 0)
                 .slice(-5); // Last 5 messages for fresh context
-            
+
             for (const msg of recentMessagesToIngest) {
                 srgService.ingestHybrid(msg.text);
             }
@@ -871,7 +927,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             });
 
             if (hybridResult) {
-                loggingService.log('INFO', 'Hybrid query complete', { 
+                loggingService.log('INFO', 'Hybrid query complete', {
                     pathsFound: hybridResult.paths.length,
                     entitiesFound: hybridResult.entityProfiles.size,
                     interferenceScore: hybridResult.interferenceHit.score.toFixed(3)
@@ -924,7 +980,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             } else {
                 loggingService.log('WARN', 'Hybrid query returned no results');
             }
-            
+
             let previousTurnCognitiveTrace = 'N/A';
             if (aiSettingsRef.current.passFullCognitiveTrace) {
                 const lastModelResponse = [...messagesForThisTurn].reverse().find(m => m.type === 'model_response');
@@ -966,21 +1022,21 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         .sort((a, b) => b.timestamp - a.timestamp)
                         .slice(0, 10); // More for main workflow since it's user-facing
                     const relevantInsights = [...new Set([...inContextInsights, ...recentInsights])];
-                    
+
                     if (relevantInsights.length === 0) {
                         return 'No background research available yet. Your autonomous research system will gather information as needed.';
                     }
-                    
+
                     return '**AUTONOMOUS RESEARCH FINDINGS:**\n' +
-                           'Your background research system has gathered the following information:\n\n' +
-                           relevantInsights.map((atom, idx) => 
-                               `[Research ${idx + 1}] Query: "${atom.backgroundInsight!.query}"\n` +
-                               `Researched: ${new Date(atom.backgroundInsight!.timestamp).toLocaleString()}\n` +
-                               `Findings: ${atom.backgroundInsight!.insight}\n` +
-                               (atom.backgroundInsight!.sources && atom.backgroundInsight!.sources.length > 0 
-                                   ? `Sources: ${atom.backgroundInsight!.sources.map(s => s.web.uri).join(', ')}\n`
-                                   : '')
-                           ).join('\n---\n\n');
+                        'Your background research system has gathered the following information:\n\n' +
+                        relevantInsights.map((atom, idx) =>
+                            `[Research ${idx + 1}] Query: "${atom.backgroundInsight!.query}"\n` +
+                            `Researched: ${new Date(atom.backgroundInsight!.timestamp).toLocaleString()}\n` +
+                            `Findings: ${atom.backgroundInsight!.insight}\n` +
+                            (atom.backgroundInsight!.sources && atom.backgroundInsight!.sources.length > 0
+                                ? `Sources: ${atom.backgroundInsight!.sources.map(s => s.web.uri).join(', ')}\n`
+                                : '')
+                        ).join('\n---\n\n');
                 })(),
                 CORE_NARRATIVE: selfNarrativeRef.current,
                 CONTEXT_FILES: contextProjectFiles.map(f => `--- FILE: ${f.name} ---\n${f.content}`).join('\n\n') || 'No files in context.',
@@ -1014,20 +1070,20 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                 let stagePrompt = '';
                 const stageInputsLog: Record<string, string> = {};
-                
+
                 // CORE NARRATIVE PROTOCOL: For synthesis stage, ensure CORE_NARRATIVE appears first
                 if (stage.id === 'synthesis_default' && stage.inputs.includes('CORE_NARRATIVE')) {
                     const coreNarrativeContent = baseContextPackets['CORE_NARRATIVE'] || 'None.';
                     stagePrompt += `\n\n--- ${CONTEXT_PACKET_LABELS['CORE_NARRATIVE']} ---\n${coreNarrativeContent}`;
                     stageInputsLog['CORE_NARRATIVE'] = `${coreNarrativeContent.substring(0, 50)}...`;
                 }
-                
+
                 for (const input of stage.inputs) {
                     // Skip CORE_NARRATIVE if we already added it above
                     if (stage.id === 'synthesis_default' && input === 'CORE_NARRATIVE') {
                         continue;
                     }
-                    
+
                     if (input.startsWith('OUTPUT_OF_')) {
                         const sourceStageId = input.replace('OUTPUT_OF_', '');
                         const sourceStage = workflow.find(s => s.id === sourceStageId);
@@ -1040,7 +1096,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         stageInputsLog[input] = `${packetContent.substring(0, 50)}...`;
                     }
                 }
-                
+
                 if (stage.id === 'synthesis_default') {
                     const contextFilesContent = baseContextPackets['CONTEXT_FILES'] || 'MISSING';
                     loggingService.log('DEBUG', `Synthesis stage building prompt`, {
@@ -1057,9 +1113,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         contextFilesValue: contextFilesContent.substring(0, 200)
                     });
                 }
-                
+
                 const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
-                
+
                 // If it's the main synthesis stage, use retry logic for cold-start timeouts
                 if (stage.id === 'synthesis_default') {
                     let synthesisCompleted = false;
@@ -1079,7 +1135,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             const contents: Content[] = [{ role: 'user', parts: [{ text: stagePrompt }] }];
                             const stream = await sendMessageToGemini(contents, stage.systemPrompt, true, roleSetting, aiSettingsRef.current.providers);
                             loggingService.log('DEBUG', 'Final synthesis stream started.');
-                            
+
                             streamedText = '';
                             finalModelAtom = {
                                 uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'model_response',
@@ -1098,7 +1154,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 }
                                 setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...m, text: streamedText + '...' } : m));
                             }
-                            
+
                             workflowOutputs[stage.id] = streamedText;
                             synthesisCompleted = true;
                             loggingService.log('INFO', `Synthesis stage complete on attempt ${attempt + 1}.`);
@@ -1118,12 +1174,12 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 name: stage.name,
                                 promptDetails: synthesisPromptDetails
                             } as any);
-                            
+
                         } catch (error: any) {
                             synthesisError = error;
                             const errorStr = (error.toString() + (error.message || '')).toLowerCase();
                             const isColdStartTimeout = errorStr.includes('429') && errorStr.includes('first token');
-                            
+
                             if (isColdStartTimeout && attempt < MAX_RETRIES - 1) {
                                 loggingService.log('WARN', `Synthesis cold-start timeout (attempt ${attempt + 1}/${MAX_RETRIES}). Retrying in 2s...`, { error: error.message });
                                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1131,8 +1187,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             } else if (isColdStartTimeout && attempt === MAX_RETRIES - 1) {
                                 loggingService.log('WARN', `Synthesis cold-start timeout after ${MAX_RETRIES} attempts. Using fallback...`);
                                 // Use subconscious or conscious output as fallback
-                                const fallbackText = workflowOutputs['conscious_default'] || workflowOutputs['subconscious_default'] || 
-                                    'I encountered a timeout while preparing the final response. Here is my analysis:\n\n' + 
+                                const fallbackText = workflowOutputs['conscious_default'] || workflowOutputs['subconscious_default'] ||
+                                    'I encountered a timeout while preparing the final response. Here is my analysis:\n\n' +
                                     workflowOutputs['conscious_default'];
                                 workflowOutputs[stage.id] = fallbackText;
                                 synthesisCompleted = true;
@@ -1158,7 +1214,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             }
                         }
                     }
-                    
+
                     if (!synthesisCompleted) {
                         throw synthesisError;
                     }
@@ -1195,9 +1251,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 setLoadingStage('');
                 return;
             }
-            
+
             const finalResponseText = workflowOutputs['synthesis_default'] || "The AI pipeline did not produce a final response.";
-            
+
             const generatedFilesFromMarkdown = extractCodeBlocksFromText(finalResponseText);
             const generatedFilesFromTools: GeneratedFile[] = [];
 
@@ -1235,7 +1291,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
             setLoadingStage('Learning from turn...');
             const { updatedMessages: messagesAfterLearning, newNarrative } = await runPostTurnCycle(messagesAfterGeneration, workflowOutputs);
-            
+
             setMessages(messagesAfterLearning);
             if (newNarrative !== selfNarrativeRef.current) {
                 setSelfNarrative(newNarrative);
@@ -1243,13 +1299,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
         } catch (e: any) {
             loggingService.log('ERROR', 'Chat pipeline error', { error: e.toString(), stack: e.stack });
-            
+
             // EMERGENCY SAVE: Persist any completed workflow stages before error handling
             if (workflowOutputs && Object.keys(workflowOutputs).length > 0) {
                 loggingService.log('WARN', 'Emergency save: Persisting completed workflow stages', { completedStages: Object.keys(workflowOutputs) });
-                
+
                 const emergencyMessages: MemoryAtom[] = [];
-                
+
                 if (workflowOutputs['subconscious_default']) {
                     emergencyMessages.push({
                         uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'conscious_thought',
@@ -1258,7 +1314,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         lastActivatedAt: Date.now(), name: 'Subconscious (Emergency Save)'
                     });
                 }
-                
+
                 if (workflowOutputs['conscious_default']) {
                     emergencyMessages.push({
                         uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'conscious_thought',
@@ -1267,15 +1323,15 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         lastActivatedAt: Date.now(), name: 'Conscious Plan (Emergency Save)'
                     });
                 }
-                
+
                 if (emergencyMessages.length > 0) {
                     setMessages(prev => [...prev, ...emergencyMessages]);
                     loggingService.log('INFO', `Emergency save complete: ${emergencyMessages.length} stages persisted to message history`);
                 }
             }
-            
+
             let friendlyError = e;
-            
+
             // Expanded error detection: Catch context overflow AND Fireworks 413 Payload Too Large
             const errorString = (e.toString() + (e.message || '')).toLowerCase();
             const isContextError = (
@@ -1283,10 +1339,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 (errorString.includes('exceed') || errorString.includes('limit') || errorString.includes('too') || errorString.includes('large'))
             ) || errorString.includes('token_limit_exceeded') || errorString.includes('413') || errorString.includes('payload too large');
             const contextRoleSetting = aiSettingsRef.current.roles.context;
-            
+
             // DISABLED: Error handler trap-door - was retrying and losing output
             // All automatic context pruning on error has been disabled
-            
+
             // Friendly error handling for common API issues
             // ... (error handling logic remains the same) ...
             setError(friendlyError);
@@ -1316,12 +1372,31 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             const newContext = isIncluded ? prev.filter(id => id !== fileId) : [...prev, fileId];
             const fileName = projectFiles.find(f => f.id === fileId)?.name;
             loggingService.log('DEBUG', 'Toggled project file context.', { fileName, fileId, included: !isIncluded });
+            (async () => {
+                try {
+                    if (!isIncluded) {
+                        await contextTierManager.storeContextItem({
+                            id: `file_${fileId}`,
+                            text: projectFiles.find(f => f.id === fileId)?.content || '',
+                            tokens: Math.max(1, Math.ceil((projectFiles.find(f => f.id === fileId)?.content || '').length / 4)),
+                            timestamp: Date.now(),
+                            layerOrigin: 'CONSCIOUS' as any,
+                            tier: 'LIVE' as any,
+                            usageCount: 0
+                        } as any);
+                    } else {
+                        await contextTierManager.moveItemToTier(`file_${fileId}`, 'DEEP');
+                    }
+                } catch (err) {
+                    loggingService.log('ERROR', 'Failed to persist project file context toggle', { error: err });
+                }
+            })();
             return newContext;
         });
     }, [projectFiles]);
 
     const isFileInContext = useCallback((fileId: string) => contextFileIds.includes(fileId), [contextFileIds]);
-    
+
     const toggleGeneratedFileContext = useCallback((fileName: string) => {
         setContextGeneratedFileNames(prev => {
             const isIncluded = prev.includes(fileName);
@@ -1330,7 +1405,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             return newContext;
         });
     }, []);
-    
+
     const isGeneratedFileInContext = useCallback((fileName: string) => contextGeneratedFileNames.includes(fileName), [contextGeneratedFileNames]);
 
     const toggleMessageContext = useCallback((uuid: string) => {
@@ -1343,6 +1418,38 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     lastActivatedAt: Date.now(),
                 };
                 loggingService.log('DEBUG', 'Toggled message context.', { uuid, included: newInContext });
+                (async () => {
+                    try {
+                        if (newInContext) {
+                            await contextTierManager.storeContextItem({
+                                id: m.uuid,
+                                text: m.text || '',
+                                tokens: Math.max(1, Math.ceil((m.text || '').length / 4)),
+                                timestamp: Date.now(),
+                                layerOrigin: 'CONSCIOUS' as any,
+                                tier: 'LIVE' as any,
+                                srgNodeIds: m.traceIds || [],
+                                usageCount: 0,
+                                messageUuid: m.uuid
+                            } as any);
+                        } else {
+                            // When removing, store to DEEP tier with messageUuid so we can restore later
+                            await contextTierManager.storeContextItem({
+                                id: m.uuid,
+                                text: m.text || '',
+                                tokens: Math.max(1, Math.ceil((m.text || '').length / 4)),
+                                timestamp: Date.now(),
+                                layerOrigin: 'CONSCIOUS' as any,
+                                tier: 'DEEP' as any,
+                                srgNodeIds: m.traceIds || [],
+                                usageCount: 0,
+                                messageUuid: m.uuid
+                            } as any);
+                        }
+                    } catch (err) {
+                        loggingService.log('ERROR', 'Failed to persist message context toggle', { error: err });
+                    }
+                })();
                 return {
                     ...m,
                     isInContext: newInContext,
@@ -1354,10 +1461,57 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             return m;
         }));
     }, []);
-    
+
     const toggleMessageCollapsed = useCallback((uuid: string) => {
         setMessages(prev => prev.map(m => m.uuid === uuid ? { ...m, isCollapsed: !m.isCollapsed } : m));
     }, []);
+
+    const runDualProcessCycleNow = useCallback(async () => {
+        if (isCognitionRunningRef.current || isLoadingRef.current) {
+            loggingService.log('WARN', 'Skipping dual-process cycle: another process is running.');
+            return;
+        }
+
+        const currentSettings = aiSettingsRef.current;
+        const workflow = currentSettings.backgroundWorkflow;
+
+        if (!workflow || workflow.length === 0) {
+            loggingService.log('WARN', 'No background workflow (Dual Process) configured.');
+            return;
+        }
+
+        loggingService.log('INFO', 'Dual Process Cycle triggered manually.');
+        setIsCognitionRunning(true);
+        setError(null);
+
+        try {
+            const contextFileNamesForCycle = projectFilesRef.current.filter(f => contextFileIdsRef.current.includes(f.id)).map(f => f.name);
+            const currentMessages = messagesRef.current;
+
+            // Build simple context object for dual process (less overhead than full search cycle)
+            const contextForDualProcess = {
+                messages: currentMessages,
+                projectFiles: projectFilesRef.current,
+                contextFileNames: contextFileNamesForCycle,
+                selfNarrative: selfNarrativeRef.current,
+                rcb: rcbRef.current,
+                baseContextPackets: {} // Dual process builds its own packets effectively
+            };
+
+            await backgroundCognitionService.runDualProcessCycle(
+                contextForDualProcess,
+                currentSettings.providers,
+                workflow
+            );
+
+            loggingService.log('INFO', 'Dual Process Cycle completed.');
+        } catch (e: any) {
+            loggingService.log('ERROR', 'Dual Process Cycle failed.', { error: e.toString() });
+        } finally {
+            setIsCognitionRunning(false);
+        }
+    }, []);
+
 
     const collapseAllMessages = useCallback(() => setMessages(prev => prev.map(m => ({ ...m, isCollapsed: true }))), []);
     const expandAllMessages = useCallback(() => setMessages(prev => prev.map(m => ({ ...m, isCollapsed: false }))), []);
@@ -1369,7 +1523,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         setSelfNarrative('');
         setRcb(initializeRCB());
     }, []);
-    
+
     const onRcbSizeLimitChange = useCallback((newLimit: number) => {
         setRcb(prev => {
             if (!prev) return initializeRCB();
@@ -1378,7 +1532,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             return newRcb;
         });
     }, []);
-    
+
     const onApiTokenLimitChange = useCallback((newLimit: number) => {
         setAiSettings(prev => ({
             ...prev,
@@ -1386,7 +1540,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         }));
         loggingService.log('DEBUG', 'API token limit changed.', { newLimit });
     }, []);
-    
+
     const onApiTokenLimitMinChange = useCallback((newLimit: number) => {
         setAiSettings(prev => ({
             ...prev,
@@ -1394,19 +1548,306 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         }));
         loggingService.log('DEBUG', 'API token limit min changed.', { newLimit });
     }, []);
-    
+
     const stopGeneration = useCallback(() => {
-      stopGenerationRef.current = true;
-      loggingService.log('WARN', 'Generation stopped by user.');
+        stopGenerationRef.current = true;
+        setIsLoading(false);
+        setLoadingStage('');
+        loggingService.log('WARN', 'Generation stopped by user.');
     }, []);
-    
+
+    const clearAllContexts = useCallback(async () => {
+        try {
+            await contextTierManager.clearAllContexts();
+            // Also update local state to clear context from UI
+            setMessages(prev => prev.map(m => ({ ...m, isInContext: false })));
+            setContextFileIds([]);
+            loggingService.log('INFO', 'Cleared all context data from DB and UI.');
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to clear all context data.', { error: e });
+        }
+    }, []);
+
+    const clearAllTrapDoorStates = useCallback(async () => {
+        try {
+            await contextTierManager.clearAllTrapDoorStates();
+            loggingService.log('INFO', 'Cleared all trap door states from DB.');
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to clear trap door states.', { error: e });
+        }
+    }, []);
+
+    const getAllContextItems = useCallback(async () => {
+        try {
+            return await contextTierManager.getAllContextItems();
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to fetch all context items.', { error: e });
+            return [] as any[];
+        }
+    }, []);
+
+    const deleteContextItem = useCallback(async (id: string) => {
+        try {
+            await contextTierManager.moveItemToTier(id, 'DEEP');
+            loggingService.log('INFO', 'Moved context item to DEEP (set-aside)', { id });
+            setMessages(prev => prev.map(m => m.uuid === id ? { ...m, isInContext: false } : m));
+            setContextFileIds(prev => prev.filter(fid => `file_${fid}` !== id));
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to delete context item', { error: e });
+        }
+    }, []);
+
+    const createWorkspace = useCallback(async (name: string, itemIds: string[], fileIds?: string[], description?: string) => {
+        const id = `ws_${Date.now()}`;
+        try {
+            await contextTierManager.createWorkspace({ id, name, itemIds, fileIds, description });
+            loggingService.log('INFO', 'Created workspace', { id, name });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to create workspace', { error: e });
+        }
+    }, []);
+
+    const getWorkspaces = useCallback(async () => {
+        try {
+            return await contextTierManager.getWorkspaces();
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to fetch workspaces', { error: e });
+            return [] as any[];
+        }
+    }, []);
+
+    const loadWorkspace = useCallback(async (id: string) => {
+        try {
+            const ws = await contextTierManager.getWorkspace(id);
+            if (!ws) return;
+
+            // Move items to LIVE tier in DB
+            for (const itemId of ws.itemIds || []) {
+                await contextTierManager.moveItemToTier(itemId, 'LIVE');
+            }
+
+            // Update messages: mark those in workspace as isInContext: true
+            setMessages(prev => prev.map(m => {
+                const isInWorkspace = (ws.itemIds || []).includes(m.uuid);
+                return isInWorkspace ? { ...m, isInContext: true } : m;
+            }));
+
+            // Update files: set context file IDs from workspace
+            if (ws.fileIds && ws.fileIds.length) {
+                setContextFileIds(ws.fileIds);
+            }
+
+            await contextTierManager.saveWorkspace({ ...ws, lastUsedAt: Date.now() });
+            loggingService.log('INFO', 'Loaded workspace', { id, itemCount: (ws.itemIds || []).length, fileCount: (ws.fileIds || []).length });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to load workspace', { error: e });
+        }
+    }, []);
+
+    /**
+     * Create/update workspace with full session state (workflow, settings, preferences)
+     */
+    const createWorkspaceWithState = useCallback(
+        async (
+            name: string,
+            description?: string,
+            includeWorkflow: boolean = true,
+            includeSettings: boolean = true,
+            includePreferences: boolean = true
+        ) => {
+            const id = `ws_${Date.now()}`;
+            const currentMessageIds = messagesRef.current.map(m => m.uuid);
+
+            const ws: any = {
+                id,
+                name,
+                description,
+                itemIds: currentMessageIds,
+                fileIds: contextFileIdsRef.current,
+                createdAt: Date.now(),
+                lastUsedAt: Date.now(),
+            };
+
+            // Include workflow configuration
+            if (includeWorkflow && aiSettingsRef.current.workflow) {
+                ws.workflow = JSON.parse(JSON.stringify(aiSettingsRef.current.workflow));
+            }
+
+            // Include AI provider settings (all providers)
+            if (includeSettings && aiSettingsRef.current.providers) {
+                ws.providers = JSON.parse(JSON.stringify(aiSettingsRef.current.providers));
+            }
+
+            // Include user preferences
+            if (includePreferences) {
+                ws.selfNarrative = selfNarrativeRef.current;
+                ws.rcb = JSON.parse(JSON.stringify(rcbRef.current));
+                ws.debugSRG = aiSettingsRef.current.debugSRG;
+                ws.passFullCognitiveTrace = aiSettingsRef.current.passFullCognitiveTrace;
+                ws.contextBudgetTokens = aiSettingsRef.current.contextBudgetTokens;
+            }
+
+            try {
+                await contextTierManager.saveWorkspace(ws);
+                loggingService.log('INFO', 'Created workspace with full state', { id, name });
+                return id;
+            } catch (e) {
+                loggingService.log('ERROR', 'Failed to create workspace with state', { error: e });
+                throw e;
+            }
+        },
+        []
+    );
+
+    /**
+     * Load workspace with selective import options
+     */
+    const loadWorkspaceWithOptions = useCallback(
+        async (
+            id: string,
+            options: {
+                workflow?: boolean;
+                aiSettings?: boolean;
+                messages?: boolean;
+                contextItems?: boolean;
+                preferences?: boolean;
+            },
+            modes: {
+                workflow?: 'replace' | 'merge';
+                aiSettings?: 'replace' | 'merge';
+                messages?: 'replace' | 'merge';
+                contextItems?: 'replace' | 'merge';
+                preferences?: 'replace' | 'merge';
+            }
+        ) => {
+            try {
+                const ws = await contextTierManager.getWorkspace(id);
+                if (!ws) {
+                    loggingService.log('WARN', 'Workspace not found', { id });
+                    return;
+                }
+
+                const importLog: Record<string, string> = {};
+
+                // Import workflow configuration
+                if (options.workflow && ws.workflow) {
+                    const mode = modes.workflow || 'replace';
+                    if (mode === 'replace') {
+                        setAiSettings(prev => ({ ...prev, workflow: ws.workflow }));
+                        importLog.workflow = 'replaced';
+                    } else {
+                        // Merge: append new stages
+                        setAiSettings(prev => ({
+                            ...prev,
+                            workflow: [...prev.workflow, ...ws.workflow],
+                        }));
+                        importLog.workflow = 'merged';
+                    }
+                }
+
+                // Import AI provider settings
+                if (options.aiSettings && ws.providers) {
+                    const mode = modes.aiSettings || 'replace';
+                    if (mode === 'replace') {
+                        setAiSettings(prev => ({ ...prev, providers: ws.providers }));
+                        importLog.aiSettings = 'replaced';
+                    } else {
+                        // Merge: update individual providers
+                        setAiSettings(prev => ({
+                            ...prev,
+                            providers: { ...prev.providers, ...ws.providers },
+                        }));
+                        importLog.aiSettings = 'merged';
+                    }
+                }
+
+                // Import messages
+                if (options.messages && ws.itemIds) {
+                    const mode = modes.messages || 'merge';
+                    const workspaceMessageIds = ws.itemIds || [];
+                    const messagesToRestore = messagesRef.current.filter(m =>
+                        workspaceMessageIds.includes(m.uuid)
+                    );
+
+                    if (mode === 'replace') {
+                        setMessages(messagesToRestore.map(m => ({ ...m, isInContext: true })));
+                        importLog.messages = `replaced with ${messagesToRestore.length} messages`;
+                    } else {
+                        // Merge: add to existing messages if not already there
+                        const existingIds = new Set(messagesRef.current.map(m => m.uuid));
+                        const newMessages = messagesToRestore.filter(
+                            m => !existingIds.has(m.uuid)
+                        );
+                        setMessages(prev => [...prev, ...newMessages.map(m => ({ ...m, isInContext: true }))]);
+                        importLog.messages = `merged ${newMessages.length} new messages`;
+                    }
+                }
+
+                // Import context items (files)
+                if (options.contextItems && ws.fileIds) {
+                    const mode = modes.contextItems || 'merge';
+                    if (mode === 'replace') {
+                        setContextFileIds(ws.fileIds);
+                        importLog.contextItems = `replaced with ${ws.fileIds.length} files`;
+                    } else {
+                        // Merge: union of current and imported file IDs
+                        setContextFileIds(prev => {
+                            const union = new Set([...prev, ...ws.fileIds]);
+                            return Array.from(union);
+                        });
+                        importLog.contextItems = `merged ${ws.fileIds.length} files`;
+                    }
+                }
+
+                // Import preferences (narrative, RCB, settings)
+                if (options.preferences) {
+                    const mode = modes.preferences || 'replace';
+                    if (mode === 'replace') {
+                        if (ws.selfNarrative) setSelfNarrative(ws.selfNarrative);
+                        if (ws.rcb) setRcb(ws.rcb);
+                        setAiSettings(prev => ({
+                            ...prev,
+                            debugSRG: ws.debugSRG ?? prev.debugSRG,
+                            passFullCognitiveTrace: ws.passFullCognitiveTrace ?? prev.passFullCognitiveTrace,
+                            contextBudgetTokens: ws.contextBudgetTokens ?? prev.contextBudgetTokens,
+                        }));
+                        importLog.preferences = 'replaced';
+                    } else {
+                        // Merge: only update if not already set
+                        if (ws.selfNarrative && !selfNarrativeRef.current) {
+                            setSelfNarrative(ws.selfNarrative);
+                        }
+                        // RCB merge: update but keep current size stats
+                        if (ws.rcb) {
+                            setRcb(prev => ({
+                                ...ws.rcb,
+                                size_current: prev.size_current,
+                                size_limit: ws.rcb.size_limit || prev.size_limit,
+                            }));
+                        }
+                        importLog.preferences = 'merged';
+                    }
+                }
+
+                loggingService.log('INFO', 'Loaded workspace with selective import', {
+                    id,
+                    imported: importLog,
+                });
+            } catch (e) {
+                loggingService.log('ERROR', 'Failed to load workspace with options', { error: e });
+                throw e;
+            }
+        },
+        []
+    );
+
     const totalContextTokens = useMemo(() => {
         const allGeneratedFiles = messages.flatMap(m => m.generatedFiles || []);
 
         const projectFileContent = projectFiles
             .filter(f => contextFileIds.includes(f.id))
             .reduce((acc, file) => acc + (file.content || ''), '');
-            
+
         const generatedFileContent = allGeneratedFiles
             .filter(f => contextGeneratedFileNames.includes(f.name))
             .reduce((acc, file) => acc + (file.content || ''), '');
@@ -1414,18 +1855,15 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         const messageContent = messages
             .filter(m => m.isInContext)
             .reduce((acc, msg) => acc + (msg.text || ''), '');
-            
+
         const contentsChars = projectFileContent.length + generatedFileContent.length + messageContent.length;
 
-        const rcbChars = rcb?.size_current || 0;
-        const lastStage = aiSettings.workflow[aiSettings.workflow.length - 1];
-        const promptTemplateChars = (lastStage?.systemPrompt || '').length;
-        const estimatedSystemPromptChars = rcbChars + promptTemplateChars;
-        
-        const totalChars = contentsChars + estimatedSystemPromptChars;
-        
+        // Note: Do NOT include rcb?.size_current here - the RCB is internal working memory, not API context
+        // The API context is just the actual messages and files the user has toggled on
+        const totalChars = contentsChars;
+
         return Math.round(totalChars / 4);
-    }, [projectFiles, contextFileIds, messages, contextGeneratedFileNames, rcb, aiSettings.workflow]);
+    }, [projectFiles, contextFileIds, messages, contextGeneratedFileNames]);
 
 
     return {
@@ -1447,10 +1885,20 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         collapseAllMessages,
         expandAllMessages,
         clearChat,
+        clearAllContexts,
+        clearAllTrapDoorStates,
+        getAllContextItems,
+        deleteContextItem,
+        createWorkspace,
+        createWorkspaceWithState,
+        getWorkspaces,
+        loadWorkspace,
+        loadWorkspaceWithOptions,
         aiSettings,
         setAiSettings,
         isCognitionRunning,
         runCognitionCycleNow,
+        runDualProcessCycleNow,
         selfNarrative,
         loadState,
         rcb,
@@ -1459,13 +1907,12 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         onApiTokenLimitMinChange,
         toggleGeneratedFileContext,
         isGeneratedFileInContext,
-        // Hybrid system methods
         queryHybrid: (prompt: string, options?: any) => srgService.queryHybrid(prompt, options),
         getHybridStats: () => srgService.getHybridStats(),
         addHybridSynonyms: (words: string[]) => srgService.addHybridSynonyms(words),
         suppressHybridPositions: (positions: number[]) => srgService.suppressHybridPositions(positions),
         ingestHybrid: (text: string) => srgService.ingestHybrid(text),
-        ingestHybridWithRole: ingestHybridWithRole, // NEW: Role-aware ingestion
-        reverseInterfere: (code: string) => srgService.reverseInterfere(code) // NEW: Reverse interference
+        ingestHybridWithRole: ingestHybridWithRole,
+        reverseInterfere: (code: string) => srgService.reverseInterfere(code)
     };
 };

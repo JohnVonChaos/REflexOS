@@ -17,8 +17,35 @@ const ContextManager: React.FC<{
     contextFileIds: string[];
     onToggleMessageContext: (uuid: string) => void;
     onToggleFileContext: (fileId: string) => void;
-}> = ({ isOpen, onClose, messages, projectFiles, contextFileIds, onToggleMessageContext, onToggleFileContext }) => {
+    onClearAllContexts: () => Promise<void>;
+    onClearTrapDoorStates: () => Promise<void>;
+    onFetchAllItems: () => Promise<any[]>;
+  onDeleteContextItem: (id: string) => Promise<void>;
+}> = ({ isOpen, onClose, messages, projectFiles, contextFileIds, onToggleMessageContext, onToggleFileContext, onClearAllContexts, onClearTrapDoorStates, onFetchAllItems, onDeleteContextItem }) => {
     if (!isOpen) return null;
+  const [showAllItems, setShowAllItems] = useState(false);
+  const [allItems, setAllItems] = useState<any[]>([]);
+  const [workspaces, setWorkspaces] = useState<any[]>([]);
+  const [newWorkspaceName, setNewWorkspaceName] = useState('');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>(undefined);
+
+  const refreshAllItems = async () => {
+    try {
+      const items = await onFetchAllItems();
+      setAllItems(items || []);
+    } catch (e) {
+      console.error('Failed to fetch context items', e);
+    }
+  };
+
+  const refreshWorkspaces = async () => {
+    try {
+      const ws = await onGetWorkspaces();
+      setWorkspaces(ws || []);
+    } catch (e) {
+      console.error('Failed to fetch workspaces', e);
+    }
+  };
     
     const contextFiles = projectFiles.filter(f => contextFileIds.includes(f.id));
     const contextInsights = messages.filter(m => m.isInContext && m.type === 'steward_note' && !!m.backgroundInsight);
@@ -32,6 +59,25 @@ const ContextManager: React.FC<{
                     <button onClick={onClose} className="p-2 rounded-full hover:bg-gray-700"><CloseIcon /></button>
                 </header>
                 <div className="p-4 overflow-y-auto space-y-6">
+                  <div className="flex gap-2 mb-2 items-center">
+                    <button onClick={async () => { await onClearAllContexts(); await refreshAllItems(); await refreshWorkspaces(); }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-md text-xs">Set-Aside All Context</button>
+                    <button onClick={async () => { await onClearTrapDoorStates(); await refreshAllItems(); }} className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 text-white rounded-md text-xs">Clear Trap Door</button>
+                    <button onClick={async () => { setShowAllItems(prev => !prev); if (!showAllItems) await refreshAllItems(); }} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-md text-xs">{showAllItems ? 'Hide All Items' : 'Show All Items'}</button>
+                    <div className="ml-4 flex items-center gap-2">
+                        <input value={newWorkspaceName} onChange={(e) => setNewWorkspaceName(e.target.value)} placeholder="New workspace name" className="bg-gray-900 p-1 rounded-md text-sm w-44" />
+                        <button onClick={async () => {
+                            const itemIds = allItems.filter(it => it.tier === 'LIVE').map(it => it.id);
+                            await onCreateWorkspace(newWorkspaceName || `ws_${Date.now()}`, itemIds, contextFileIds);
+                            setNewWorkspaceName('');
+                            await refreshWorkspaces();
+                        }} className="px-2 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded-md text-xs">Save Workspace</button>
+                        <select value={selectedWorkspaceId} onChange={(e) => setSelectedWorkspaceId(e.target.value)} className="bg-gray-900 p-1 rounded-md text-sm">
+                            <option value="">Select workspace...</option>
+                            {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                        </select>
+                        <button onClick={async () => { if (selectedWorkspaceId) { await onLoadWorkspace(selectedWorkspaceId); await refreshAllItems(); await refreshWorkspaces(); } }} className="px-2 py-1 bg-green-600 hover:bg-green-500 text-white rounded-md text-xs">Load Workspace</button>
+                    </div>
+                  </div>
                     <div>
                         <h3 className="font-semibold text-gray-300 mb-2">Files in Context ({contextFiles.length})</h3>
                         <ul className="space-y-1 bg-gray-900/50 p-2 rounded-md">
@@ -67,6 +113,21 @@ const ContextManager: React.FC<{
                             ))}
                         </ul>
                     </div>
+                    {showAllItems && (
+                      <div>
+                        <h3 className="font-semibold text-gray-300 mb-2">All Stored Context Items ({allItems.length})</h3>
+                        <ul className="space-y-1 bg-gray-900/50 p-2 rounded-md">
+                          {allItems.map((it) => (
+                            <li key={it.id} className="flex justify-between items-center p-1.5">
+                              <div className="text-sm truncate">{it.id} — {String(it.text).substring(0, 120)}</div>
+                              <div className="flex items-center gap-2">
+                                            <button onClick={async () => { await (onDeleteContextItem as any)(it.id); await refreshAllItems(); }} className="text-xs px-2 py-1 bg-amber-700 hover:bg-amber-600 rounded-md">Set-Aside</button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                 </div>
             </div>
         </div>
@@ -170,6 +231,13 @@ interface ChatPanelProps {
   rcb: RunningContextBuffer | undefined;
   onRcbSizeLimitChange: (newLimit: number) => void;
   onViewTrace: (traceIds: string[]) => void;
+  onClearAllContexts: () => Promise<void>;
+  onClearAllTrapDoorStates: () => Promise<void>;
+  onFetchAllContextItems: () => Promise<any[]>;
+  onDeleteContextItem: (id: string) => Promise<void>;
+  onCreateWorkspace: (name: string, itemIds: string[], fileIds?: string[], description?: string) => Promise<void>;
+  onGetWorkspaces: () => Promise<any[]>;
+  onLoadWorkspace: (id: string) => Promise<void>;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -371,6 +439,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         contextFileIds={contextFileIds}
         onToggleMessageContext={onToggleMessageContext}
         onToggleFileContext={onToggleFileContext}
+        onClearAllContexts={onClearAllContexts}
+        onClearTrapDoorStates={onClearAllTrapDoorStates}
+        onFetchAllItems={onFetchAllContextItems}
+        onDeleteContextItem={onDeleteContextItem}
+        onCreateWorkspace={onCreateWorkspace}
+        onGetWorkspaces={onGetWorkspaces}
+        onLoadWorkspace={onLoadWorkspace}
       />
 
     </div>

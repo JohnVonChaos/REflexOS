@@ -36,23 +36,45 @@ export const useSrgForceLayout = (
 
   // Initialize nodes
   useEffect(() => {
+    // ⚠️ CRITICAL: Don't initialize if dimensions aren't ready
+    if (!width || !height) {
+      console.log('[SRG] Waiting for valid dimensions...', { width, height });
+      return;
+    }
+
     const existingNodesMap = new Map<string, GraphNode>(nodesRef.current.map(n => [n.id, n]));
+    
     nodesRef.current = srgNodes.map((node): GraphNode => {
       const existing = existingNodesMap.get(node.id);
-      if (existing) {
+      
+      // If node exists AND we're not recovering from invalid dimensions, preserve position
+      if (existing && existing.x !== 0 && existing.y !== 0) {
         return { ...existing, ...node };
       }
+      
+      // Initialize with proper random spread around center
+      const angle = Math.random() * 2 * Math.PI;
+      const radius = Math.random() * Math.min(width, height) * 0.1;
+      
       return {
         ...node,
-        x: width / 2 + (Math.random() - 0.5) * width * 0.1,
-        y: height / 2 + (Math.random() - 0.5) * height * 0.1,
-        vx: 0,
+        x: width / 2 + Math.cos(angle) * radius,
+        y: height / 2 + Math.sin(angle) * radius,
+        vx: 0,  // ← CRITICAL: Zero initial velocity
         vy: 0,
       };
     });
-    setNodes(nodesRef.current);
+    
+    setNodes([...nodesRef.current]);  // Force new array reference
     setLinks(srgLinks);
+    
+    console.log('[SRG] Initialized nodes:', { 
+      count: nodesRef.current.length,
+      dims: { width, height },
+      sample: nodesRef.current.slice(0, 2).map(n => ({ id: n.id, x: n.x, y: n.y }))
+    });
   }, [srgNodes, srgLinks, width, height]);
+
 
   const simulationTick = useCallback(() => {
     if (!width || !height) return;

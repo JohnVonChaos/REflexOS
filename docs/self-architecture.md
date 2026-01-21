@@ -22,6 +22,7 @@ A lightweight, maintainable blueprint of the AI's internal design: SRG-based int
 
 - **backgroundOrchestrator.ts** — scheduler and guardrail for idle cycles; supports per-stage timing and run modes.
 - **backgroundCognitionService.ts** — implements Subconscious / Conscious / Synthesis layers and web-search integration.
+- **server/browserServer.ts** — Playwright-based web search server (port 3005) that scrapes full article content from DuckDuckGo results.
 - **luescherService.ts + jelly/components/MarbleSorter** — Lüscher intake (marble sorter) UI and persistence; used for gating and emotional_state injection into RCB/RCB-updates.
 ## 3) Core data structures (quick reference)
 
@@ -131,6 +132,39 @@ This gives Reflex a deterministic workspace it can operate on, resume tasks agai
 - The orchestrator tracks `lastRunByStage` and enforces intervalMs = minutes * 60 * 1000.
 - Idle cycles use a randomized weighted selector but still prefer chained synthesis by default.
 - **Important:** cycles are atomic and do not chain across orchestrator ticks to avoid runaway cascading runs.
+
+### Web Search Integration (Playwright)
+
+- **Architecture**: Client-server model with Playwright browser automation
+	- Frontend (`geminiService.ts`) calls `/search` endpoint with query
+	- Backend (`server/browserServer.ts`) runs on port 3005
+	- Playwright scrapes DuckDuckGo in headed/headless mode
+
+- **Search Flow**:
+	1. Search DuckDuckGo for URLs matching query
+	2. Extract top 5 result URLs from `<article>` elements
+	3. Visit each URL with random delays (500-2000ms) to simulate human behavior
+	4. Scrape full article content (up to 50k chars per page):
+		- Title from `<h1>` or `document.title`
+		- Body from `article`, `main`, `.content` areas
+		- All paragraphs, headings, and list items
+	5. Return structured results with title, URL, and full snippet
+
+- **Configuration**:
+	- `AISettings.playwrightSearchUrl` — server address (default: `http://localhost:3005`)
+	- Configurable via Background Cognition Modal UI
+	- CORS enabled for cross-origin requests
+
+- **Fallback Behavior**:
+	- Used automatically for providers without native web search (e.g., Fireworks)
+	- Gemini uses native search when available
+	- Custom `webSearchApiUrl` takes precedence if configured
+
+- **Performance Notes**:
+	- Each search takes ~5-10 seconds (5 URLs × ~1-2s each)
+	- Headed mode (visible browser) for debugging; headless for production
+	- Content extraction handles academic papers, blogs, and documentation sites
+	- PDF links return empty content (future enhancement)
 ## 7) Self-edit & versioning policy
 
 - Store this file in `docs/self-architecture.md` and update on any infra/major design changes.

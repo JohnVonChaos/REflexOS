@@ -58,7 +58,19 @@ class RcbService {
             providers
         );
 
-        const parsedResponse = JSON.parse(responseJson.trim().replace(/```json|```/g, ''));
+        // Robust fence extraction (handles trailing commentary)
+        let candidate = responseJson.trim();
+        const fencedMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (fencedMatch) {
+            candidate = fencedMatch[1].trim();
+        } else {
+            // Pattern fallback for un-fenced JSON
+            const jsonMatch = candidate.match(/(\[[\s\S]*\])|(\{[\s\S]*\})/);
+            if (jsonMatch) {
+                candidate = jsonMatch[0];
+            }
+        }
+        const parsedResponse = JSON.parse(candidate);
         
         const newRcb: RunningContextBuffer = {
             ...currentRcb,
@@ -86,8 +98,9 @@ class RcbService {
         loggingService.log('INFO', 'RCB update successful.', { update: parsedResponse });
         return newRcb;
 
-    } catch (error) {
-      loggingService.log('ERROR', 'RCB Update failed, returning original.', { error });
+    } catch (error: any) {
+      const errorDetails = { message: error?.message, name: error?.name, stack: error?.stack, raw: String(error), type: typeof error };
+      loggingService.log('ERROR', 'RCB Update failed, returning original.', { error: errorDetails });
       return currentRcb;
     }
   }

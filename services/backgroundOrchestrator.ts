@@ -3,6 +3,7 @@ import { memoryService } from './memoryService';
 import { loggingService } from './loggingService';
 import { getLatestLuescherProfile, shouldRefreshProfile } from './luescherService';
 import { sessionService } from './sessionService';
+import { runWebResearchCycle } from './backgroundCognitionService';
 
 type OrchestratorOptions = { intervalMs?: number; idleMs?: number };
 
@@ -60,7 +61,7 @@ class BackgroundOrchestrator {
       }
 
       const all = await memoryService.getAll();
-      const lastUser = all.filter(a => a.role === 'user').sort((a,b) => (b.timestamp||0) - (a.timestamp||0))[0];
+      const lastUser = all.filter(a => a.role === 'user').sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
       const now = Date.now();
       const idle = !lastUser || (now - (lastUser.timestamp || 0) > (this.options.idleMs || 30000));
 
@@ -83,9 +84,9 @@ class BackgroundOrchestrator {
               // Respect per-stage run mode: 'independent' runs only synthesis, otherwise run the chained cycle
               const runMode = (stage as any).backgroundRunMode || 'chained';
               if (runMode === 'independent') {
-                await backgroundCognitionService.runSynthesisCycle(all, Math.floor(Date.now()/1000));
+                await backgroundCognitionService.runSynthesisCycle(all, Math.floor(Date.now() / 1000));
               } else {
-                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now()/1000), roleSetting as any, providers as any);
+                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000), roleSetting as any, providers as any);
               }
             } catch (e) {
               loggingService.log('ERROR', `Scheduled background cycle for stage ${stage.id} failed`, { error: e });
@@ -106,15 +107,78 @@ class BackgroundOrchestrator {
         await backgroundCognitionService.runWebSearchCycle({ messages: all, projectFiles: [], contextFileNames: [], selfNarrative: '', rcb: undefined }, { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' }, ({} as any));
       } else if (r < 0.8) {
         loggingService.log('INFO', 'Orchestrator: running chained synthesis cycle.');
-        await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now()/1000));
+        await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000));
       } else {
         loggingService.log('INFO', 'Orchestrator: running reflection cycle.');
-        await backgroundCognitionService.runReflectionCycle(all, Math.floor(Date.now()/1000));
+
+        await backgroundCognitionService.runReflectionCycle(all, Math.floor(Date.now() / 1000));
       }
+
+      // Run scheduled tasks
+      await scheduler.tick();
     } catch (e) {
       loggingService.log('ERROR', 'Background orchestrator cycle failed', { error: e });
     }
   }
 }
 
+
+// Simple Scheduler Implementation
+export interface Task {
+  id: string;
+  intervalMs: number;
+  run: () => Promise<void>;
+  lastRun?: number;
+}
+
+class Scheduler {
+  private tasks: Task[] = [];
+
+  register(task: Task) {
+    this.tasks.push(task);
+  }
+
+  async tick() {
+    const now = Date.now();
+    for (const task of this.tasks) {
+      if (!task.lastRun || now - task.lastRun >= task.intervalMs) {
+        task.lastRun = now;
+        try {
+          await task.run();
+        } catch (e) {
+          console.error(`Task ${task.id} failed:`, e);
+        }
+      }
+    }
+  }
+}
+
+export const scheduler = new Scheduler();
+
+// Register the web research task
+scheduler.register({
+  id: 'web_research',
+  intervalMs: 5 * 60 * 1000, // Every 5 minutes
+  run: async () => {
+    console.log('[Background] Running web research cycle');
+
+    // Research topics of interest
+    const topics = [
+      'AI consciousness emergence',
+      'semantic reasoning graphs',
+      'geometric interference patterns'
+    ];
+
+    const topic = topics[Math.floor(Math.random() * topics.length)];
+    const content = await runWebResearchCycle(topic);
+
+    console.log(`[Background] Researched "${topic}", found ${content.length} sources`);
+
+    content.forEach((text, i) => {
+      console.log(`[Research ${i + 1}] ${text.slice(0, 200)}...`);
+    });
+  }
+});
+
 export const backgroundOrchestrator = new BackgroundOrchestrator();
+
