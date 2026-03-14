@@ -170,12 +170,27 @@ function App() {
   // Effect for Background Cognition manual trigger
   useEffect(() => {
     const handleTrigger = () => {
-      console.log('[App] Received trigger-background-cycle event. Initiating Dual Process Cycle.');
-      chat.runDualProcessCycleNow();
+      console.log('[App] Received trigger-background-cycle event. Initiating cognition cycle.');
+      chat.runCognitionCycleNow(true);
     };
     window.addEventListener('trigger-background-cycle', handleTrigger);
     return () => window.removeEventListener('trigger-background-cycle', handleTrigger);
-  }, [chat.runDualProcessCycleNow]);
+  }, [chat.runCognitionCycleNow]);
+
+  // Effect for Code Maintenance manual trigger
+  useEffect(() => {
+    const handleCodeMaintenance = () => {
+      console.log('[App] Received trigger-code-maintenance event.');
+      const stage = chat.aiSettings.backgroundWorkflow?.find(s => s.id === 'code_maintenance');
+      if (stage) {
+        chat.runAutonomousWorkflowCycle(stage);
+      } else {
+        console.warn('[App] No code_maintenance stage found in backgroundWorkflow.');
+      }
+    };
+    window.addEventListener('trigger-code-maintenance', handleCodeMaintenance);
+    return () => window.removeEventListener('trigger-code-maintenance', handleCodeMaintenance);
+  }, [chat.runAutonomousWorkflowCycle, chat.aiSettings.backgroundWorkflow]);
 
   const handleCompareFiles = (filesToCompare: ProjectFile[]) => {
     if (filesToCompare.length !== 2) {
@@ -390,6 +405,7 @@ function App() {
                   error={chat.error}
                   onToggleMessageContext={chat.toggleMessageContext}
                   onStopGeneration={chat.stopGeneration}
+                  onInterruptLayer={chat.interruptCurrentLayer}
                   contextFileIds={chat.contextFileIds}
                   onToggleFileContext={chat.toggleProjectFileContext}
                   totalContextTokens={chat.totalContextTokens}

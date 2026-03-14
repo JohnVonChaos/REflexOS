@@ -538,6 +538,7 @@ interface ChatPanelProps {
     error: Error | null;
     onToggleMessageContext: (uuid: string) => void;
     onStopGeneration: () => void;
+    onInterruptLayer: () => void;
     contextFileIds: string[];
     onToggleFileContext: (fileId: string) => void;
     totalContextTokens: number;
@@ -572,6 +573,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     error,
     onToggleMessageContext,
     onStopGeneration,
+    onInterruptLayer,
     contextFileIds,
     onToggleFileContext,
     totalContextTokens,
@@ -677,7 +679,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     <div className="flex items-center gap-2">
                         <button onClick={onCollapseAll} title="Collapse All" className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-md"><CollapseIcon /></button>
                         <button onClick={onExpandAll} title="Expand All" className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-md"><ExpandIcon /></button>
-                        <button onClick={onClearChat} title="Clear Chat" className="p-2 text-gray-400 hover:text-red-500 hover:bg-gray-700 rounded-md"><TrashIcon /></button>
                     </div>
                 </div>
                 <div className="flex flex-col gap-2 mt-2">
@@ -785,6 +786,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     onClose={() => setIsWorkflowDesignerOpen(false)}
                     settings={aiSettings}
                     setSettings={setAiSettings}
+                    onClearMessages={onClearChat}
+                    messages={messages}
                 />
             )}
 

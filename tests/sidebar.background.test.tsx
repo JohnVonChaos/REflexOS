@@ -52,4 +52,52 @@ describe('Sidebar Background Cognition button', () => {
     root.unmount();
     document.body.removeChild(container);
   });
+
+  it('calls export state handler when Export State clicked', () => {
+    const onExportState = vi.fn();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <Sidebar
+          projectFiles={[]}
+          generatedFiles={[]}
+          selfNarrative={''}
+          insights={[]}
+          axioms={[]}
+          onImportFiles={() => {}}
+          onImportState={() => {}}
+          onExportAll={() => {}}
+          onExportState={onExportState}
+          onCompareFiles={() => {}}
+          onDeleteFiles={() => {}}
+          onToggleFileContext={() => {}}
+          isFileInContext={() => false}
+          onShowCrystal={() => {}}
+          isCrystalPanelVisible={false}
+          onShowAxioms={() => {}}
+          onShowInsights={() => {}}
+          onShowLogs={() => {}}
+          onShowSrgExplorer={() => {}}
+          onShowKnowledgeModules={() => {}}
+          onShowImportHistory={() => {}}
+          onToggleMessageContext={() => {}}
+          onToggleGeneratedFileContext={() => {}}
+          isGeneratedFileInContext={() => false}
+        />
+      );
+    });
+
+    const btn = Array.from(container.querySelectorAll('button')).find(b => (b.textContent || '').includes('Export State')) as HTMLButtonElement | undefined;
+    expect(btn).toBeTruthy();
+    if (!btn) return;
+
+    act(() => { btn.click(); });
+    expect(onExportState).toHaveBeenCalled();
+
+    root.unmount();
+    document.body.removeChild(container);
+  });
 });

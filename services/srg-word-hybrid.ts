@@ -917,6 +917,32 @@ export class SRGWordHybrid {
       synsetGroups: this.synsets['synsetToWords'].size
     };
   }
+
+  /**
+   * Export the raw token corpus. Used for session export/import.
+   */
+  public getCorpusTokens(): string[] {
+    return [...this.corpus];
+  }
+
+  /**
+   * Replace the current corpus with an imported corpus. This is an async
+   * convenience wrapper which ingests the supplied token list as a single
+   * bulk text blob to rebuild internal indices and relations.
+   */
+  public async importCorpus(tokens: string[]): Promise<void> {
+    // Reset internal structures
+    this.nodes = new Map();
+    this.edges = new Map();
+    this.corpus = [];
+    this.synsets = new Synsets();
+    this.suppressedPositions = new Set();
+
+    if (!tokens || tokens.length === 0) return;
+    // Join tokens into a single string and ingest (ingest will rebuild nodes/edges)
+    const text = tokens.join(' ');
+    await this.ingest(text);
+  }
 }
 
 // ============================================================================

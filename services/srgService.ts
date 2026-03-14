@@ -5,8 +5,8 @@ import { srgDataset } from './srgDataset';
 import SRGWordHybrid, { HybridQueryResult, EntityProfile } from './srg-word-hybrid';
 
 const DB_KEY = 'srg-graph-v7'; // Incremented version for new architecture
-const ONE_MONTH_MS = 1000 * 60 * 60 * 24 * 30;
-const SAVE_DEBOUNCE_MS = 5000;
+const ONE_MONTH_MS = 1000 * 60 * 60 * 24 * 30; 
+const SAVE_DEBOUNCE_MS = 5000; 
 
 class SRGService {
   private graph: GraphState = { nodes: [], links: [] };
@@ -35,23 +35,8 @@ class SRGService {
         console.log(`[SRG] Loaded ${storedGraph.nodes.length} nodes from IDB.`);
         this.graph = storedGraph;
         this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
-
-        // Restore hybrid corpus if present
-        if (storedGraph.hybridCorpus && storedGraph.hybridCorpus.length > 0) {
-          console.log(`[SRG] Restoring ${storedGraph.hybridCorpus.length} tokens to hybrid corpus`);
-          (this.hybrid as any).corpus = storedGraph.hybridCorpus;
-
-          // Restore knowledge modules manifest
-          if (storedGraph.knowledgeModules && storedGraph.knowledgeModules.length > 0) {
-            this.knowledgeModules = storedGraph.knowledgeModules;
-            console.log(`[SRG] Restored ${storedGraph.knowledgeModules.length} knowledge modules`);
-            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens + ${storedGraph.knowledgeModules.length} knowledge modules from memory crystal.`);
-          } else {
-            onProgress(`Restored ${this.graph.nodes.length} nodes + ${storedGraph.hybridCorpus.length} corpus tokens from memory crystal.`);
-          }
-        } else {
-          onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
-        }
+        this.knowledgeModules = storedGraph.knowledgeModules || [];
+        onProgress(`Restored ${this.graph.nodes.length} nodes from memory crystal.`);
       } else {
         console.log('[SRG] No valid cache found. Building from scratch.');
         
@@ -73,11 +58,11 @@ class SRGService {
         let processedTurns = 0;
         for (const turn of trainingData) {
             await this.processTextForGraph(turn, false);
-            await this.hybrid.ingest(turn);
+            this.hybrid.ingest(turn);
             processedTurns++;
             if (processedTurns % 200 === 0) {
               onProgress(`Weaving connections... ${processedTurns}/${trainingData.length}`);
-              await new Promise(r => setTimeout(r, 0));
+              await new Promise(r => setTimeout(r, 0)); 
             }
         }
 
@@ -130,15 +115,8 @@ class SRGService {
 
   private async saveGraphImmediate() {
     try {
-      // Include hybrid corpus and knowledge modules in the saved state
-      const stateToSave: GraphState = {
-        nodes: this.graph.nodes,
-        links: this.graph.links,
-        hybridCorpus: (this.hybrid as any).corpus || [],
-        knowledgeModules: this.knowledgeModules
-      };
-      await set(DB_KEY, stateToSave);
-      console.log(`[SRG] Saved ${stateToSave.nodes.length} nodes, ${stateToSave.links.length} links, ${stateToSave.hybridCorpus.length} corpus tokens, ${this.knowledgeModules.length} knowledge modules`);
+      this.graph.knowledgeModules = this.knowledgeModules;
+      await set(DB_KEY, this.graph);
     } catch (error) {
       console.error('[SRG] Failed to save graph:', error);
     }
@@ -281,7 +259,9 @@ class SRGService {
           timeWeight += Math.exp(-decayConstant * age);
       }
       
-      timeWeight = Math.min(timeWeight, 10); 
+      // Ensure a minimum base weight so structural links don't vanish completely due to age
+      timeWeight = Math.max(0.2, Math.min(timeWeight, 10)); 
+      
       const typeMultiplier = link.type === 'semantic' ? config.semanticWeight : config.syntacticWeight;
 
       // New: Boost paths involving primitive nodes
@@ -324,30 +304,13 @@ class SRGService {
       return result;
   }
 
-  // NEW: Method to get co-occurrence count for synset expansion filtering
-  public getSynonymCoOccurrence(synonym: string, query: string): number {
-      // This is a conceptual implementation.
-      // A real one would check how often 'synonym' and words from 'query'
-      // appear together within a certain window in the corpus.
-      // For now, we'll use a placeholder that always returns a high value
-      // to ensure all synonyms are considered, or integrate with the hybrid system's stats.
-      
-      // Conceptual: Check corpus for co-occurrence
-      // const hybridStats = this.hybrid.getStats();
-      // Access internal corpus or index to count co-occurrences.
-      // This is a simplified placeholder.
-      return 10; // Placeholder for a high co-occurrence count
-  }
-
   public trace(query: string, config?: SRGTraversalConfig): Map<string, PulseResult[]> {
-    // Use the provided config or a default one
-    const effectiveConfig = config || {
+    const { algorithm, maxDepth, branchingFactor, weightThreshold, semanticWeight, syntacticWeight, customScript } = config || {
         algorithm: 'bfs', maxDepth: 2, branchingFactor: 5, weightThreshold: 0.05,
-        semanticWeight: 1.5, syntacticWeight: 1.0, customScript: 'return link.strength;',
-        minCoOccurrenceThreshold: 5 // NEW: Default threshold
+        semanticWeight: 1.5, syntacticWeight: 1.0, customScript: 'return link.strength;' 
     };
 
-    const { algorithm, maxDepth, branchingFactor, weightThreshold, semanticWeight, syntacticWeight, customScript, minCoOccurrenceThreshold } = effectiveConfig;
+    const effectiveConfig = { algorithm, maxDepth, branchingFactor, weightThreshold, semanticWeight, syntacticWeight, customScript };
     const words = [...new Set(query.toLowerCase().replace(/[.,'!?]/g, '').split(/\s+/).filter(Boolean))];
     const traceResults = new Map<string, PulseResult[]>();
     const now = Date.now();
@@ -370,28 +333,10 @@ class SRGService {
         const startNode = this.nodeMap.get(startWord);
         if (!startNode) continue;
 
-        // NEW: Synset expansion with co-occurrence filtering
-        const expandedWords = new Set<string>([startWord]);
-        if (minCoOccurrenceThreshold !== undefined && minCoOccurrenceThreshold > 0) {
-            // Get synonyms for the start word
-            const synonyms = this.hybrid ? Array.from(this.hybrid['synsets'].getSynonyms(startWord)) : [startWord];
-            for (const syn of synonyms) {
-                if (syn === startWord) continue; // Skip the word itself
-                const coOccurrenceCount = this.getSynonymCoOccurrence(syn, query);
-                if (coOccurrenceCount >= (minCoOccurrenceThreshold || 0)) {
-                    expandedWords.add(syn);
-                    console.log(`Expanded '${startWord}' to synonym '${syn}' (co-occurrence: ${coOccurrenceCount})`);
-                } else {
-                    console.log(`Skipped synonym '${syn}' for '${startWord}' (co-occurrence: ${coOccurrenceCount} < threshold: ${minCoOccurrenceThreshold})`);
-                }
-            }
-        }
-
         const targetWords = new Set(words.filter(w => w !== startWord));
         const isExpansionMode = targetWords.size === 0;
 
-        // Use expanded words for the search
-        const q: {id: string, depth: number}[] = Array.from(expandedWords).map(w => ({id: this.nodeMap.get(w)?.id || w, depth: 0}));
+        const q: {id: string, depth: number}[] = [{id: startNode.id, depth: 0}];
         const predecessors = new Map<string, string | null>([[startNode.id, null]]);
         const visited = new Set<string>([startNode.id]);
         const pathsFound = new Map<string, string[]>();
@@ -516,6 +461,20 @@ class SRGService {
   }
 
   /**
+   * Get corpus statistics (formatted for UI display)
+   */
+  public getCorpusStats() {
+    const hybridStats = this.hybrid.getStats();
+    return {
+      totalTokens: hybridStats.corpusSize,
+      estimatedBytes: hybridStats.corpusSize * 5, // Rough estimate: avg 5 bytes per token
+      nodes: hybridStats.nodes,
+      edges: hybridStats.edges,
+      synsetGroups: hybridStats.synsetGroups
+    };
+  }
+
+  /**
    * Add hybrid synonym group
    */
   public addHybridSynonyms(words: string[]): void {
@@ -531,163 +490,99 @@ class SRGService {
 
   /**
    * Ingest text into the hybrid system for learning
-   * With optional metadata to track as a knowledge module
-   * Made async to prevent UI blocking on large texts
    */
-  public async ingestHybrid(
+  public ingestHybrid(
     text: string,
-    metadata?: {
-      title?: string;
-      source?: string;
-      category?: KnowledgeModule['category'];
-    }
-  ): Promise<void> {
-    const corpus = (this.hybrid as any).corpus || [];
-    const startPosition = corpus.length;
-
-    // Ingest the text (now async)
-    await this.hybrid.ingest(text);
-
-    const endPosition = (this.hybrid as any).corpus.length;
-    const tokenCount = endPosition - startPosition;
-
-    // If metadata provided, create a knowledge module entry
-    if (metadata && tokenCount > 0) {
+    moduleMetadata?: { title: string; source: string; category: KnowledgeModule['category'] }
+  ): void {
+    const startPosition = this.hybrid.getStats().corpusSize;
+    this.hybrid.ingest(text);
+    
+    if (moduleMetadata) {
+      const tokenCount = text.split(/\s+/).length;
       const module: KnowledgeModule = {
-        id: `module_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        title: metadata.title || 'Untitled',
-        source: metadata.source || 'unknown',
-        category: metadata.category || 'other',
+        id: `km-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        title: moduleMetadata.title,
+        source: moduleMetadata.source,
+        category: moduleMetadata.category,
         tokenCount,
         loadedAt: Date.now(),
         startPosition,
-        endPosition
+        endPosition: this.hybrid.getStats().corpusSize
       };
-
       this.knowledgeModules.push(module);
-      console.log(`[SRG] Registered knowledge module: ${module.title} (${tokenCount} tokens)`);
-
-      // Trigger save to persist the module
       this.triggerSave();
     }
   }
 
   /**
-   * REVERSE INTERFERENCE: Given code, infer the query that would generate it
-   * Enables self-supervised learning and bidirectional code understanding
-   */
-  public reverseInterfere(targetCode: string): { query: string; confidence: number } {
-    return this.hybrid.reverseInterfere(targetCode);
-  }
-
-  /**
-   * Export the full SRG state for session persistence
-   * Returns nodes, links, hybrid corpus, and knowledge modules
-   */
-  public exportState(): GraphState {
-    return {
-      nodes: this.graph.nodes,
-      links: this.graph.links,
-      hybridCorpus: (this.hybrid as any).corpus || [],
-      knowledgeModules: this.knowledgeModules
-    };
-  }
-
-  /**
-   * Import SRG state from a session export
-   * Replaces current state entirely
-   */
-  public async importState(state: GraphState): Promise<void> {
-    console.log(`[SRG] Importing state: ${state.nodes.length} nodes, ${state.links.length} links, ${state.hybridCorpus?.length || 0} corpus tokens, ${state.knowledgeModules?.length || 0} knowledge modules`);
-
-    this.graph = {
-      nodes: state.nodes,
-      links: state.links
-    };
-
-    this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
-
-    // Rebuild internal maps
-    this.linkMap = new Map(this.graph.links.map(l => {
-        const signature = l.type === 'semantic'
-            ? [l.source, l.target].sort().join('-') + `-${l.type}`
-            : `${l.source}-${l.target}-${l.type}`;
-        return [signature, l];
-    }));
-    this.nodeMap = new Map(this.graph.nodes.map(n => [n.id, n]));
-
-    // Restore hybrid corpus
-    if (state.hybridCorpus && state.hybridCorpus.length > 0) {
-      (this.hybrid as any).corpus = state.hybridCorpus;
-      console.log(`[SRG] Restored ${state.hybridCorpus.length} tokens to hybrid corpus`);
-    }
-
-    // Restore knowledge modules manifest
-    if (state.knowledgeModules && state.knowledgeModules.length > 0) {
-      this.knowledgeModules = state.knowledgeModules;
-      console.log(`[SRG] Restored ${state.knowledgeModules.length} knowledge modules`);
-    }
-
-    // Save to IndexedDB
-    await this.saveGraphImmediate();
-  }
-
-  /**
-   * Get corpus statistics
-   */
-  public getCorpusStats() {
-    const corpus = (this.hybrid as any).corpus || [];
-    return {
-      totalTokens: corpus.length,
-      uniqueWords: this.nodeIds.size,
-      estimatedBytes: corpus.join(' ').length
-    };
-  }
-
-  /**
-   * Get all knowledge modules
+   * Get all loaded knowledge modules
    */
   public getKnowledgeModules(): KnowledgeModule[] {
-    return this.knowledgeModules;
+    return [...this.knowledgeModules];
   }
 
+    /**
+     * Export the full SRG state for session export. Includes graph nodes/links,
+     * hybrid corpus tokens, and knowledge module metadata.
+     */
+    public exportState() {
+        return {
+            nodes: this.graph.nodes,
+            links: this.graph.links,
+            hybridCorpus: this.hybrid.getCorpusTokens(),
+            knowledgeModules: [...this.knowledgeModules]
+        } as any;
+    }
+
+    /**
+     * Import a serialized GraphState. Replaces current graph (nodes/links)
+     * and, if present, imports the hybrid corpus asynchronously.
+     */
+    public async importState(state: { nodes?: GraphNode[]; links?: GraphLink[]; hybridCorpus?: string[]; knowledgeModules?: KnowledgeModule[] } | null | undefined): Promise<void> {
+        if (!state) return;
+
+        if (state.nodes) {
+            this.graph.nodes = state.nodes.map(n => ({ ...n }));
+            this.nodeIds = new Set(this.graph.nodes.map(n => n.id));
+            this.nodeMap = new Map(this.graph.nodes.map(n => [n.id, n]));
+        }
+
+        if (state.links) {
+            this.graph.links = state.links.map(l => ({ ...l }));
+            this.linkMap = new Map(this.graph.links.map(l => {
+                const signature = l.type === 'semantic' ? [l.source, l.target].sort().join('-') + `-${l.type}` : `${l.source}-${l.target}-${l.type}`;
+                return [signature, l];
+            }));
+        }
+
+        if (state.knowledgeModules) {
+            this.knowledgeModules = state.knowledgeModules.map(m => ({ ...m }));
+        }
+
+        // Persist the updated graph metadata right away
+        this.triggerSave();
+
+        // Import hybrid corpus if provided (may be large)
+        if (state.hybridCorpus && Array.isArray(state.hybridCorpus)) {
+            try {
+                await this.hybrid.importCorpus(state.hybridCorpus);
+            } catch (e) {
+                console.warn('[SRG] Failed to import hybrid corpus', e);
+            }
+        }
+    }
+
   /**
-   * Generate corpus manifest text for injection into system prompts
-   * Makes subsystems AWARE of what knowledge they have access to
+   * Delete a knowledge module (metadata only - corpus remains)
    */
-  public getCorpusManifest(): string {
-    if (this.knowledgeModules.length === 0) {
-      return 'No knowledge modules currently loaded.';
-    }
-
-    const lines = ['=== AVAILABLE KNOWLEDGE MODULES ==='];
-    lines.push(`You have access to ${this.knowledgeModules.length} loaded knowledge base(s):`);
-    lines.push('');
-
-    // Group by category
-    const byCategory = new Map<string, KnowledgeModule[]>();
-    for (const module of this.knowledgeModules) {
-      const category = module.category;
-      if (!byCategory.has(category)) {
-        byCategory.set(category, []);
-      }
-      byCategory.get(category)!.push(module);
-    }
-
-    for (const [category, modules] of Array.from(byCategory.entries()).sort()) {
-      lines.push(`[${category.toUpperCase()}]`);
-      for (const module of modules) {
-        const sizeKB = Math.round((module.tokenCount * 5) / 1024); // Rough estimate: 5 chars per token
-        lines.push(`  • ${module.title} (${module.tokenCount.toLocaleString()} tokens, ~${sizeKB}KB)`);
-        lines.push(`    Source: ${module.source}`);
-      }
-      lines.push('');
-    }
-
-    lines.push('You can query these knowledge bases using interference-based recall.');
-    lines.push('Query the local corpus BEFORE resorting to web search when possible.');
-
-    return lines.join('\n');
+  public deleteKnowledgeModule(moduleId: string): boolean {
+    const index = this.knowledgeModules.findIndex(m => m.id === moduleId);
+    if (index === -1) return false;
+    
+    this.knowledgeModules.splice(index, 1);
+    this.triggerSave();
+    return true;
   }
 }
 

@@ -92,6 +92,7 @@ interface MessageProps {
   onToggleContext: (uuid: string) => void;
   onToggleCollapsed: (uuid: string) => void;
   onViewTrace: (traceIds: string[]) => void;
+  onInterruptLayer?: () => void;
   debugMode?: boolean;
 }
 
@@ -114,7 +115,7 @@ const summarizeText = (text: string, startWords = 15, endWords = 10): string => 
     return `${start} ... ${end}`;
 };
 
-export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, onToggleContext, onToggleCollapsed, onViewTrace, debugMode }) => {
+export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, onToggleContext, onToggleCollapsed, onViewTrace, onInterruptLayer, debugMode }) => {
   const { bg, border, icon } = getRoleStyles(atom.role, atom.type);
   const isCognitive = atom.type === 'subconscious_reflection' || atom.type === 'conscious_thought' || atom.type === 'axiom';
   const hasInternals = (atom.cognitiveTrace && atom.cognitiveTrace.length > 0) || atom.backgroundInsight;
@@ -315,6 +316,7 @@ export const Message: React.FC<MessageProps> = ({ atom, allMessages, allFiles, o
                         isExpanded={isTraceExpanded}
                         setIsExpanded={setIsTraceExpanded}
                         debugMode={debugMode}
+                        onInterruptLayer={onInterruptLayer}
                     />
                 )}
             </div>

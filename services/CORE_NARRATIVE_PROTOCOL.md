@@ -86,24 +86,20 @@ for (const input of stage.inputs) {
 
 **Result**: The model's attention stays on the internal story because it sees `CORE_NARRATIVE` **before** any user-pasted text.
 
-### 5. Output Format (JSON Structure)
+### 5. Output Format (Dot Notation Protocol)
 
-The synthesis stage is configured to return:
+The synthesis layer (L3) generates the user-facing response natively. To update internal state such as Axioms or the Core Narrative, it uses the **Dot Notation Wire Protocol** embedded in the text:
 
-```json
-{
-  "response": "The polished user-facing answer...",
-  "coreNarrative": "The full, updated internal story...",
-  "axioms": [
-    { "id": "axiom.id", "text": "The axiom text..." },
-  ]
-}
+```text
+> core.write [your perspective on what just happened]
+! core.axiom [id] "The axiom text..."
+The polished user-facing answer goes here...
 ```
 
 The orchestrator routes:
-- `response` → displayed to the user
-- `coreNarrative` → stored in `CORE_NARRATIVE` for the next turn
-- `axioms` → passed to axiom processing pipeline
+- User-facing text → displayed to the user
+- `> core.write` → passed to narrative integration
+- `! core.axiom` → parsed, stored, and passed to axiom processing pipeline
 
 **No over-writing of user-provided narrative ever happens.**
 

@@ -2,12 +2,12 @@
 
 // FIX: Update import to use RoleSetting and context packets
 import type { MemoryAtom, BackgroundInsight, AISettings, ProjectFile, RunningContextBuffer, RoleSetting, WorkflowStage } from '../types';
-import { generateText, performWebSearch, BACKGROUND_COGNITION_PROMPT, SUBCONSCIOUS_PROMPT, CONSCIOUS_PROMPT } from './geminiService';
+import { generateText, performWebSearch, sendMessageToGemini, BACKGROUND_COGNITION_PROMPT, SUBCONSCIOUS_PROMPT, CONSCIOUS_PROMPT } from './geminiService';
 import { getDefaultSettings } from '../types';
 import { loggingService } from './loggingService';
 import { srgStorage } from './srgStorage';
 import { srgService } from './srgService';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, Content } from '@google/genai';
 import { CONTEXT_PACKET_LABELS, ALL_CONTEXT_PACKETS } from '../types';
 import { resurfacingService } from './resurfacingService';
 import { sessionService } from './sessionService';
@@ -15,6 +15,7 @@ import { dualProcessEngine } from './dualProcessEngine';
 import { contextDiffer } from './contextDiffer';
 import { scratchpadService } from './scratchpad';
 import type { DistilledInsight } from '../types/dualProcess';
+import { codingAgentTool } from './codingAgentTool';
 
 interface FullCognitionContext {
   messages: MemoryAtom[];
@@ -59,12 +60,31 @@ class BackgroundCognitionService {
       return null;
     }
 
+    // -------- CODING AGENT BRANCH --------
+    if (workflowStage?.id === 'code_maintenance') {
+      const atoms = await this.runCodeMaintenanceCycle(
+        context, workflowStage, roleSetting, providers
+      );
+      if (atoms.length > 0) {
+        // Return a synthetic BackgroundInsight so callers can persist the result
+        return {
+          query: `[Code Maintenance] ${workflowStage.name}`,
+          insight: atoms.map(a => a.text).join('\n\n'),
+          sources: [],
+          timestamp: Date.now(),
+        };
+      }
+      return null;
+    }
+
     try {
       // ========== PHASE 1: SUBCONSCIOUS - SRG CORPUS QUERY ==========
       loggingService.log('INFO', '[BACKGROUND SUBCONSCIOUS] Analyzing RCB for research direction...');
 
       const contextString = this.buildContextString(context, workflowStage);
-      const corpusManifest = srgService.getCorpusManifest();
+      const stats = srgService.getCorpusStats();
+      const modules = srgService.getKnowledgeModules();
+      const corpusManifest = `[SRG CORPUS MANIFEST]\nTotal Nodes: ${stats.nodes}\nTotal Edges: ${stats.edges}\nKnowledge Modules Loaded:\n${modules.map(m => `- ${m.title} (${m.category})`).join('\n') || 'None'}`;
       const systemInstructionWithManifest = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString()) + '\n\n' + corpusManifest;
 
       const queryResponse = await generateText(contextString, systemInstructionWithManifest, roleSetting, providers);
@@ -481,6 +501,205 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
 
     } catch (e) {
       loggingService.log('ERROR', 'runDualProcessCycle failed', { error: e });
+    }
+  }
+
+  /**
+   * Helper to execute Ask commands during background cognition
+   */
+  private async executeAskCommand(commandLine: string, context: FullCognitionContext, providers: AISettings['providers']): Promise<string> {
+      try {
+          const cmd = commandLine.trim().substring(2).trim(); // Remove "? "
+          const projectFiles = context.projectFiles || [];
+          
+          if (cmd.startsWith('file.read')) {
+              const path = cmd.replace('file.read', '').trim();
+              const file = projectFiles.find(f => f.name === path);
+              if (file) return `File ${path}:\n\`\`\`\n${file.content}\n\`\`\``;
+              return `File not found: ${path}`;
+          }
+          else if (cmd.startsWith('file.list')) {
+              const dir = cmd.replace('file.list', '').trim();
+              const files = projectFiles.filter(f => f.name.startsWith(dir) || dir === '').map(f => f.name);
+              return files.length ? files.join('\n') : "No files found.";
+          }
+          else if (cmd.startsWith('file.find')) {
+              const pattern = cmd.replace('file.find', '').trim();
+              const regex = new RegExp(pattern, 'i');
+              const files = projectFiles.filter(f => regex.test(f.name) || regex.test(f.content || '')).map(f => f.name);
+               return files.length ? `Found in:\n${files.join('\n')}` : "No matches found.";
+          }
+          else if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
+               const query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
+               const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
+               const results = await performWebSearch(query, fakeRole, providers);
+               return results ? `${results.text}\nSources: ${results.sources?.map((s: any) => s.web?.uri).filter(Boolean).join(', ')}` : "No results found.";
+          }
+          else if (cmd.startsWith('srg.q')) {
+               const query = cmd.replace('srg.q', '').trim();
+               const result = srgService.queryHybrid(query);
+               if (!result) return "No SRG results found.";
+               return `SRG Results for "${query}":\n${result.generated || ''}\nTrace: ${result.trace?.map((t: any) => t.word).join(', ') || ''}`;
+          }
+          else if (cmd.startsWith('wo.status')) {
+               return "No active work orders."; // Stub for backend
+          }
+          
+          return "Command not recognized or supported.";
+      } catch (err) {
+          return `Error executing command: ${err}`;
+      }
+  }
+
+  /**
+   * CODING AGENT CYCLE
+   *
+   * Runs when a WorkflowStage with id 'code_maintenance' is scheduled.
+   * 1. Ask the LLM to propose a focused coding task, supporting a `?` research loop.
+   * 2. Parse the proposal with codingAgentTool.extractTaskFromReasoning().
+   * 3. Attach any project files that live in the proposed cwd.
+   * 4. Execute the task in a fallback loop, passing failure Crystals to subsequent models.
+   * 5. Import the result into memory, or perform a Complete Autopsy on total failure.
+   */
+  async runCodeMaintenanceCycle(
+    context: FullCognitionContext,
+    workflowStage: WorkflowStage,
+    roleSetting: RoleSetting,
+    providers: AISettings['providers']
+  ): Promise<MemoryAtom[]> {
+    loggingService.log('INFO', '[CODE MAINTENANCE] Starting coding agent cycle...');
+    await scratchpadService.append('SYSTEM', `🚀 CODE MAINTENANCE: Starting task proposal for "${workflowStage.name}"`, 'RESEARCH', 'LOW');
+    
+    try {
+      // Step 1: Ask the LLM to propose a task (with re-invoke research loop)
+      await scratchpadService.append('SYSTEM', '📋 Phase 1: Asking LLM to propose coding task...', 'THOUGHT', 'LOW');
+      const startPrompt = this.buildContextString(context, workflowStage);
+      let isStageComplete = false;
+      let contents: Content[] = [{ role: 'user', parts: [{ text: startPrompt }] }];
+      let finalProposalOutput = '';
+      
+      while (!isStageComplete) {
+          const stream = await sendMessageToGemini(contents, workflowStage.systemPrompt, false, roleSetting, providers);
+          let streamedText = '';
+          for await (const chunk of stream) {
+              if (chunk.text) streamedText += chunk.text;
+          }
+          
+          const lines = streamedText.trim().split('\n');
+          const lastLine = lines[lines.length - 1]?.trim();
+          
+          if (lastLine?.startsWith('? ')) {
+              const result = await this.executeAskCommand(lastLine, context, providers);
+              contents.push({ role: 'model', parts: [{ text: streamedText }] });
+              contents.push({ role: 'user', parts: [{ text: `> ${result}` }] });
+              finalProposalOutput += streamedText + `\n> ${result}\n\n`;
+          } else {
+              finalProposalOutput += streamedText;
+              isStageComplete = true;
+          }
+      }
+      
+      const proposal = finalProposalOutput;
+
+      if (!proposal || proposal.trim().length < 10) {
+        const message = 'LLM returned empty proposal — skipping.';
+        loggingService.log('WARN', '[CODE MAINTENANCE] ' + message);
+        await scratchpadService.append('SYSTEM', `⚠️ CODE MAINTENANCE: ${message}`, 'OBSERVE', 'HIGH');
+        return [];
+      }
+      loggingService.log('INFO', `[CODE MAINTENANCE] Proposal:\n${proposal.slice(0, 400)}`);
+      await scratchpadService.append('SYSTEM', `💡 Task Proposal Generated:\n${proposal.slice(0, 300)}...`, 'THOUGHT', 'LOW');
+
+      // Step 2: Parse structured task spec
+      await scratchpadService.append('SYSTEM', '🔍 Phase 2: Parsing task specification...', 'THOUGHT', 'LOW');
+      const spec = codingAgentTool.extractTaskFromReasoning(proposal);
+      if (!spec) {
+        const message = 'Could not parse structured task from proposal — skipping.';
+        loggingService.log('WARN', '[CODE MAINTENANCE] ' + message);
+        await scratchpadService.append('SYSTEM', `❌ PARSE ERROR: ${message}`, 'OBSERVE', 'HIGH');
+        return [];
+      }
+
+      // Step 3: Attach project files that live under the proposed cwd
+      const cwd = spec.cwd.replace(/\\/g, '/');
+      spec.files = (context.projectFiles ?? [])
+        .filter(f => f.name?.replace(/\\/g, '/').includes(cwd.split('/').pop() || ''))
+        .map(f => ({ path: f.name, content: f.content ?? '' }));
+
+      loggingService.log(
+        'INFO',
+        `[CODE MAINTENANCE] Task "${spec.name}" armed with ${spec.files.length} file(s) in ${spec.cwd}`
+      );
+      await scratchpadService.append('SYSTEM', `⚡ Phase 3: Executing Task "${spec.name}"\n📁 ${spec.cwd}\n📄 ${spec.files.length} files attached`, 'EDIT', 'BALANCED');
+
+      // Step 4: Run the task using the Escalation Ladder
+      const fallbackModels = workflowStage.escalationModels && workflowStage.escalationModels.length > 0 
+          ? [workflowStage.selectedModel, ...workflowStage.escalationModels] 
+          : [workflowStage.selectedModel, 'deepseek-coder-v2', 'gemini-2.5-flash', 'gemini-2.5-pro']; 
+      let failedCrystals: string[] = [];
+      let finalResult = null;
+      let currentModelIndex = 0;
+      
+      while (currentModelIndex < fallbackModels.length) {
+          spec.model = fallbackModels[currentModelIndex];
+          if (failedCrystals.length > 0) {
+              spec.crystal = failedCrystals.join('\n---\n');
+          }
+          
+          loggingService.log('INFO', `[CODE MAINTENANCE] Running task with model "${spec.model}" (Attempt ${currentModelIndex + 1})`);
+          await scratchpadService.append('SYSTEM', `🤖 Escalation: Trying model ${spec.model}...`, 'THOUGHT', 'LOW');
+          
+          finalResult = await codingAgentTool.runCodingTask(spec);
+          
+          if (finalResult.success) {
+              break;
+          } else {
+              // Extract crystal
+              const crystalPayload = `Model ${spec.model} failed after ${finalResult.iterationCount} iterations.\nError output:\n${finalResult.error || finalResult.output}`;
+              failedCrystals.push(crystalPayload);
+              currentModelIndex++;
+          }
+      }
+      
+      const result = finalResult!;
+
+      if (!result.success) {
+          // Total failure autopsy
+          const autopsyCrystal = `[COMPLETE AUTOPSY]\nTask: ${spec.name}\nAll ${fallbackModels.length} models failed in escalation ladder.\n\n=== CRYSTALS ===\n${failedCrystals.join('\n---\n')}`;
+          await scratchpadService.append('SYSTEM', `💀 TOTAL EXHAUSTION. Complete Autopsy Crystal Generated:\n${autopsyCrystal.slice(0, 300)}...`, 'OBSERVE', 'HIGH');
+          
+          // Emit to memory so it reverts to research list
+          const atom: MemoryAtom = {
+              uuid: `coding-failure-${result.taskId}`,
+              type: 'steward_note',
+              role: 'model',
+              text: `Coding task "${spec.name}" completely failed. Reverting to research list.\n\n${autopsyCrystal}`,
+              timestamp: Date.now(),
+              isInContext: true,
+              isCollapsed: false,
+          };
+          srgService.ingestHybrid(`Coding task "${spec.name}" failed to converge using all models. Escalation exhausted.`);
+          return [atom];
+      }
+      
+      // Log the successful result to scratchpad
+      const statusText = 'SUCCESS';
+      await scratchpadService.append('SYSTEM', `✅ CODE MAINTENANCE: ${statusText}\nTask: ${spec.name}\nDuration: ${result.duration_ms}ms\nIterations: ${result.iterationCount}`, 'EDIT', 'LOW');
+
+      // Step 5: Import into memory
+      const atom = await codingAgentTool.importTaskResult(result);
+      loggingService.log(
+        'INFO',
+        `[CODE MAINTENANCE] Task complete. Success=${result.success}. MemoryAtom created: ${atom.uuid}`
+      );
+      
+      await scratchpadService.append('SYSTEM', `💾 Results imported to memory (${atom.uuid})\nSRG knowledge updated with coding outcomes`, 'RESEARCH', 'LOW');
+      
+      return [atom];
+    } catch (err) {
+      loggingService.log('ERROR', '[CODE MAINTENANCE] Cycle failed', { error: err });
+      await scratchpadService.append('SYSTEM', `💥 CODE MAINTENANCE FAILED: ${err}`, 'OBSERVE', 'HIGH');
+      return [];
     }
   }
 }

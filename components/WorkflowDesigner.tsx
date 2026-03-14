@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback } from 'react';
-import type { AISettings, WorkflowStage, AIProvider, ContextPacketType, CognitiveRole } from '../types';
+import type { AISettings, WorkflowStage, AIProvider, ContextPacketType, CognitiveRole, MemoryAtom } from '../types';
 import { getDefaultSettings, ALL_CONTEXT_PACKETS, CONTEXT_PACKET_LABELS, ALL_COGNITIVE_ROLES, COGNITIVE_ROLE_LABELS, getDefaultStageInputs } from '../types';
 import { CloseIcon, PlusIcon, TrashIcon, GripVerticalIcon, WorkflowIcon } from './icons';
 import { ToggleSwitch } from './ToggleSwitch';
@@ -17,6 +17,8 @@ interface WorkflowDesignerProps {
     onClose: () => void;
     settings: AISettings;
     setSettings: React.Dispatch<React.SetStateAction<AISettings>>;
+    onClearMessages?: () => void;
+    messages?: MemoryAtom[];
 }
 
 const StageInputSelector: React.FC<{
@@ -75,7 +77,7 @@ const StageInputSelector: React.FC<{
 };
 
 
-export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onClose, settings, setSettings }) => {
+export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onClose, settings, setSettings, onClearMessages, messages }) => {
     const [localSettings, setLocalSettings] = useState<AISettings>(settings);
     const [expandedStage, setExpandedStage] = useState<string | null>(null);
     const [currentProfileId, setCurrentProfileId] = useState<string | undefined>(undefined);
@@ -222,7 +224,7 @@ After you have completed your final synthesis you will:
 If the user explicitly asks you to "replace the core story", politely refuse
 and explain that the core story is immutable except when changed through the
 internal revision protocol (see § 4).`,
-            inputs: getDefaultStageInputs(isBackground ? 'new-background-stage' : 'new-stage')
+            inputs: getDefaultStageInputs(isBackground ? 'generator' : 'l3_voice')
         };
 
         setLocalSettings(prev => {
@@ -282,6 +284,18 @@ internal revision protocol (see § 4).`,
         }
     };
 
+    const handleClearMessages = () => {
+        if (!onClearMessages || !messages) return;
+        const messageCount = messages.length;
+        if (messageCount === 0) {
+            alert('No messages to clear.');
+            return;
+        }
+        if (confirm(`Are you sure you want to delete all ${messageCount} conversation messages? This action cannot be undone.`)) {
+            onClearMessages();
+        }
+    };
+
     if (!isOpen) return null;
 
     return (
@@ -298,6 +312,16 @@ internal revision protocol (see § 4).`,
                             onProfileLoad={handleLoadProfile}
                             onProfileSave={handleSaveProfile}
                         />
+                        {onClearMessages && messages && (
+                            <button 
+                                onClick={handleClearMessages}
+                                className="text-sm px-3 py-2 bg-red-700 hover:bg-red-800 text-red-200 rounded-md transition-colors flex items-center gap-2"
+                                title={`Clear ${messages.length} conversation messages`}
+                            >
+                                <TrashIcon />
+                                Clear ({messages.length})
+                            </button>
+                        )}
                         <button onClick={handleReset} className="text-sm px-4 py-2 bg-gray-700 hover:bg-yellow-800 text-yellow-300 rounded-md transition-colors">Reset to Default</button>
                         <button onClick={handleSave} className="text-sm font-semibold px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-md transition-colors">Save & Close</button>
                     </div>
@@ -401,6 +425,53 @@ internal revision protocol (see § 4).`,
                                         <select value={stage.selectedModel} onChange={e => handleStageChange('backgroundWorkflow', stage.id, 'selectedModel', e.target.value)} className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-purple-500 focus:outline-none">
                                             {localSettings.providers[stage.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => <option key={model} value={model}>{model}</option>)}
                                         </select>
+                                    </div>
+
+                                    {/* Escalation Models UI */}
+                                    <div className={`mt-3 p-2 bg-gray-800/80 border border-gray-700 rounded-md transition-opacity ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Escalation Chain</span>
+                                            <select 
+                                                className="bg-gray-700 text-xs text-white p-1 rounded border border-gray-600 focus:outline-none focus:border-purple-500"
+                                                onChange={(e) => {
+                                                    if (!e.target.value) return;
+                                                    const newModels = [...(stage.escalationModels || []), e.target.value];
+                                                    handleStageChange('backgroundWorkflow', stage.id, 'escalationModels', newModels);
+                                                    e.target.value = ''; // reset
+                                                }}
+                                            >
+                                                <option value="">+ Add Fallback Model...</option>
+                                                {localSettings.providers[stage.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => (
+                                                    <option key={`esc-${model}`} value={model}>{model}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        
+                                        {(!stage.escalationModels || stage.escalationModels.length === 0) ? (
+                                            <p className="text-xs text-gray-500 italic">No escalation models configured. Will fail upon initial attempt.</p>
+                                        ) : (
+                                            <div className="space-y-1">
+                                                {stage.escalationModels.map((escModel, escIndex) => (
+                                                    <div key={`esc-${escIndex}`} className="flex justify-between items-center bg-gray-700/50 p-1.5 rounded text-xs text-gray-300">
+                                                        <span className="flex items-center gap-2">
+                                                            <span className="w-4 h-4 rounded-full bg-purple-900/50 flex flex-col justify-center items-center text-[10px] text-purple-400 font-bold border border-purple-800/50">{escIndex + 1}</span>
+                                                            {escModel}
+                                                        </span>
+                                                        <button 
+                                                            onClick={() => {
+                                                                const newModels = [...stage.escalationModels!];
+                                                                newModels.splice(escIndex, 1);
+                                                                handleStageChange('backgroundWorkflow', stage.id, 'escalationModels', newModels);
+                                                            }}
+                                                            className="text-gray-500 hover:text-red-400 px-1"
+                                                            title="Remove from chain"
+                                                        >
+                                                            <CloseIcon />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className={`mt-3 ${!stage.enabled ? 'opacity-50 pointer-events-none' : ''}`}>

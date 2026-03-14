@@ -1,0 +1,168 @@
+import logging
+import re
+from fastapi import FastAPI
+from pydantic import BaseModel
+import requests
+from fastapi.middleware.cors import CORSMiddleware
+
+
+# --- Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class SearchQuery(BaseModel):
+    query: str
+
+
+# Replace with your Brave Search API key
+BRAVE_API_KEY = "BSAf9Suu35VdwpSVFlXcE4rf-KKbxuV"
+
+
+# --- Helper Functions ---
+
+
+def extract_search_phrase(raw_query):
+    """Extracts the core search intent from the raw input."""
+    match = re.search(r'SEARCH QUERY:\s*([^\n]+)', raw_query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    lines = [l.strip() for l in raw_query.splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def result_is_relevant(result, query):
+    """
+    Filters out results where the title/snippet does not contain 
+    significant words from the query.
+    """
+    query_words = [w.lower() for w in re.split(r'\W+', query) if len(w) > 3]
+    
+    if not query_words:
+        return True
+
+    title = result.get("title", "").lower()
+    snippet = result.get("snippet", result.get("description", "")).lower()
+    
+    match_found = any(word in title or word in snippet for word in query_words)
+    return match_found
+
+
+def normalize_brave_results(raw_results):
+    """
+    Normalizes Brave API response structure into standard format.
+    """
+    normalized = []
+    for res in raw_results:
+        title = res.get("title", "")
+        url = res.get("url", "")
+        snippet = res.get("description", "")
+        
+        if title and url:
+            normalized.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "source": "brave"
+            })
+    return normalized
+
+
+# --- API Wrapper Functions ---
+
+
+def brave_search(query: str, num_results: int = 10):
+    """
+    Performs search using Brave Search API.
+    """
+    logger.info(f"Performing Brave search for: '{query}'")
+    url = "https://api.search.brave.com/res/v1/web/search"
+    
+    headers = {
+        "X-Subscription-Token": BRAVE_API_KEY,
+        "Accept": "application/json"
+    }
+    
+    params = {
+        "q": query,
+        "count": num_results,
+        "country": "us",
+        "search_lang": "en",
+        "safesearch": "moderate",
+        "text_decorations": False
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        # Brave returns results in 'web' -> 'results'
+        web_results = data.get('web', {}).get('results', [])
+        return normalize_brave_results(web_results)
+        
+    except Exception as e:
+        logger.error(f"Brave Search API error: {e}")
+        return []
+
+
+# --- Main Endpoint ---
+
+
+@app.post("/websearch")
+async def websearch_endpoint(data: SearchQuery):
+    logger.info(f"Received request. Raw Query: '{data.query}'")
+    main_query = extract_search_phrase(data.query)
+    logger.info(f"Extracted Query: '{main_query}'")
+
+    # Perform Brave search
+    raw_results = brave_search(main_query)
+    
+    # Apply Relevance Filtering
+    filtered_results = [res for res in raw_results if result_is_relevant(res, main_query)]
+    
+    logger.info(f"Brave returned {len(raw_results)} raw, {len(filtered_results)} relevant.")
+
+    # Fallback: If filters removed everything, keep top 2 raw results
+    if not filtered_results and raw_results:
+        logger.warning("All filters failed. Returning top 2 raw results as fallback.")
+        filtered_results = raw_results[:2]
+
+    # Format Final Output
+    enriched_results = []
+    for res in filtered_results:
+        enriched_data = {
+            "title": res["title"],
+            "url": res["url"],
+            "snippet": res["snippet"],
+            "page_content": res["snippet"]
+        }
+        enriched_results.append(enriched_data)
+
+    # Create a text summary for LLM consumption
+    summary = "\n\n".join([
+        f"Title: {r['title']}\nURL: {r['url']}\nSnippet: {r['snippet']}"
+        for r in enriched_results
+    ])
+    
+    if not summary:
+        summary = "No relevant search results found."
+
+    logger.info(f"Returning {len(enriched_results)} items.")
+    return {"text": summary, "results": enriched_results}
+
+
+# Run: uvicorn yourfilename:app --host 0.0.0.0 --port 8000 --reload

@@ -1,5 +1,18 @@
 import { chromium, Browser, Page } from 'playwright';
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { execSync, spawn } from 'child_process';
+
+interface AgentScoreRow {
+    id: number;
+    task: string;
+    model: string;
+    success: number;
+    duration_ms: number;
+    iteration: number;
+    timestamp: string;
+}
 
 const app = express();
 app.use(express.json());
@@ -137,6 +150,404 @@ async function fetchPageContent(page: Page, url: string): Promise<{ title: strin
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', message: 'Playwright search server is running' });
 });
+
+// ─── CODING AGENT ENDPOINTS ────────────────────────────────────────────────
+
+/** POST /run-agent  { task }  → CodingTaskResult */
+app.post('/run-agent', async (req, res) => {
+    const { task } = req.body;
+    if (!task || !task.id || !task.cwd || !task.test_command) {
+        return res.status(400).json({ error: 'task.id, task.cwd, and task.test_command are required' });
+    }
+
+    const startTime = Date.now();
+    const tempDir = path.join(__dirname, '../temp-coding-tasks', task.id);
+    const taskJsonPath = path.join(tempDir, 'task.json');
+    const agentPath = path.resolve(__dirname, '../agent.ts');
+    const scoresPath = path.join(path.dirname(agentPath), 'agent_scores.json');
+    const timeoutMs = task.timeout_ms ?? 60_000;
+
+    try {
+        // Write task files to temp dir
+        fs.mkdirSync(tempDir, { recursive: true });
+        for (const file of (task.files ?? [])) {
+            const fp = path.join(tempDir, file.path);
+            fs.mkdirSync(path.dirname(fp), { recursive: true });
+            fs.writeFileSync(fp, file.content, 'utf-8');
+        }
+        fs.writeFileSync(taskJsonPath, JSON.stringify(task, null, 2));
+
+        // Spawn: npx tsx agent.ts task.json
+        const result = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
+            let stdout = '';
+            let stderr = '';
+            let timedOut = false;
+
+            const timer = setTimeout(() => {
+                timedOut = true;
+                proc.kill();
+            }, timeoutMs);
+
+            const proc = spawn('npx', ['tsx', agentPath, taskJsonPath], {
+                cwd: path.dirname(agentPath),
+                shell: process.platform === 'win32',
+            });
+
+            proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+            proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+            proc.on('close', (code: number | null) => {
+                clearTimeout(timer);
+                resolve({ stdout, stderr, code: timedOut ? 124 : (code ?? 1) });
+            });
+            proc.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
+        });
+
+        const duration_ms = Date.now() - startTime;
+        const success = result.code === 0;
+
+        // Read model + iteration from JSON scores file
+        let modelUsed = 'unknown';
+        let iterationCount = 0;
+        try {
+            if (fs.existsSync(scoresPath)) {
+                const scores: AgentScoreRow[] = JSON.parse(fs.readFileSync(scoresPath, 'utf-8'));
+                const row = scores.filter(r => r.task === task.id).at(-1);
+                if (row) { modelUsed = row.model; iterationCount = row.iteration; }
+            }
+        } catch { /* ignore */ }
+
+        // Append this run to the scores file
+        const newRow: AgentScoreRow = {
+            id: Date.now(),
+            task: task.id,
+            model: modelUsed,
+            success: success ? 1 : 0,
+            duration_ms: Date.now() - startTime,
+            iteration: iterationCount,
+            timestamp: new Date().toISOString(),
+        };
+        try {
+            const existing: AgentScoreRow[] = fs.existsSync(scoresPath)
+                ? JSON.parse(fs.readFileSync(scoresPath, 'utf-8'))
+                : [];
+            existing.push(newRow);
+            fs.writeFileSync(scoresPath, JSON.stringify(existing, null, 2));
+        } catch { /* ignore */ }
+
+        res.json({
+            taskId: task.id,
+            success,
+            output: `${result.stdout}\n${result.stderr}`,
+            error: success ? undefined : `Agent exited with code ${result.code}`,
+            duration_ms,
+            modelUsed,
+            iterationCount,
+            dbPath: scoresPath,
+        });
+    } catch (err: any) {
+        res.status(500).json({
+            taskId: task.id,
+            success: false,
+            output: '',
+            error: err.message,
+            duration_ms: Date.now() - startTime,
+            iterationCount: 0,
+            dbPath: '',
+        });
+    }
+});
+
+/** GET /agent-leaderboard?limit=N  → AgentScoreRow[] */
+app.get('/agent-leaderboard', (req, res) => {
+    const limit = parseInt(String(req.query.limit ?? '20'), 10);
+    const agentPath = path.resolve(__dirname, '../agent.ts');
+    const scoresPath = path.join(path.dirname(agentPath), 'agent_scores.json');
+    try {
+        if (!fs.existsSync(scoresPath)) return res.json([]);
+        const scores: AgentScoreRow[] = JSON.parse(fs.readFileSync(scoresPath, 'utf-8'));
+        res.json(scores.slice(-limit).reverse());
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/** GET /agent-models  → string[] */
+app.get('/agent-models', (req, res) => {
+    const agentPath = path.resolve(__dirname, '../agent.ts');
+    try {
+        const output = execSync(`npx tsx "${agentPath}" models`, { encoding: 'utf-8' });
+        const models = output.split('\n').map(l => l.trim()).filter(Boolean);
+        res.json(models);
+    } catch {
+        res.json([]);
+    }
+});
+
+// ─── END CODING AGENT ENDPOINTS ────────────────────────────────────────────
+
+// ─── FILE SYSTEM ENDPOINTS FOR AGENT ──────────────────────────────────────
+
+/** GET /api/fs/list?path=<dir>  → { files: FileItem[], directories: FileItem[], error?: string } */
+app.get('/api/fs/list', (req, res) => {
+    const targetPath = req.query.path as string || process.cwd();
+    
+    try {
+        if (!fs.existsSync(targetPath)) {
+            return res.status(404).json({ error: `Directory not found: ${targetPath}`, files: [], directories: [] });
+        }
+        
+        const stats = fs.statSync(targetPath);
+        if (!stats.isDirectory()) {
+            return res.status(400).json({ error: `Path is not a directory: ${targetPath}`, files: [], directories: [] });
+        }
+        
+        const items = fs.readdirSync(targetPath, { withFileTypes: true });
+        const files = items
+            .filter(item => item.isFile())
+            .map(item => ({
+                name: item.name,
+                path: path.join(targetPath, item.name),
+                size: fs.statSync(path.join(targetPath, item.name)).size,
+                modified: fs.statSync(path.join(targetPath, item.name)).mtime.toISOString(),
+            }));
+        
+        const directories = items
+            .filter(item => item.isDirectory())
+            .map(item => ({
+                name: item.name,
+                path: path.join(targetPath, item.name),
+                size: 0,
+                modified: fs.statSync(path.join(targetPath, item.name)).mtime.toISOString(),
+            }));
+        
+        res.json({ files, directories });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, files: [], directories: [] });
+    }
+});
+
+/** GET /api/fs/read?path=<file>  → { content: string, error?: string } */
+app.get('/api/fs/read', (req, res) => {
+    const filePath = req.query.path as string;
+    
+    if (!filePath) {
+        return res.status(400).json({ error: 'path parameter is required' });
+    }
+    
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: `File not found: ${filePath}` });
+        }
+        
+        const stats = fs.statSync(filePath);
+        if (!stats.isFile()) {
+            return res.status(400).json({ error: `Path is not a file: ${filePath}` });
+        }
+        
+        const content = fs.readFileSync(filePath, 'utf-8');
+        res.json({ content });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/** POST /api/fs/write  { path: string, content: string }  → { success: boolean, error?: string } */
+app.post('/api/fs/write', (req, res) => {
+    const { path: filePath, content } = req.body;
+    
+    if (!filePath || content === undefined) {
+        return res.status(400).json({ success: false, error: 'path and content are required' });
+    }
+    
+    try {
+        // Create directory if it doesn't exist
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        fs.writeFileSync(filePath, content, 'utf-8');
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/** POST /api/fs/mkdir  { path: string }  → { success: boolean, error?: string } */
+app.post('/api/fs/mkdir', (req, res) => {
+    const { path: dirPath } = req.body;
+    
+    if (!dirPath) {
+        return res.status(400).json({ success: false, error: 'path is required' });
+    }
+    
+    try {
+        fs.mkdirSync(dirPath, { recursive: true });
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/** DELETE /api/fs/delete?path=<file>  → { success: boolean, error?: string } */
+app.delete('/api/fs/delete', (req, res) => {
+    const filePath = req.query.path as string;
+    
+    if (!filePath) {
+        return res.status(400).json({ success: false, error: 'path parameter is required' });
+    }
+    
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ success: false, error: `Path not found: ${filePath}` });
+        }
+        
+        const stats = fs.statSync(filePath);
+        if (stats.isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(filePath);
+        }
+        
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─── END FILE SYSTEM ENDPOINTS ─────────────────────────────────────────────
+
+// ─── FILE SYSTEM ENDPOINTS FOR AGENT ──────────────────────────────────────────
+
+/** GET /api/fs/list?path=<dir>  → { files: FileItem[], directories: FileItem[], error?: string } */
+app.get('/api/fs/list', (req, res) => {
+    const targetPath = req.query.path as string || process.cwd();
+    
+    try {
+        if (!fs.existsSync(targetPath)) {
+            return res.status(404).json({ error: `Directory not found: ${targetPath}`, files: [], directories: [] });
+        }
+        
+        const stats = fs.statSync(targetPath);
+        if (!stats.isDirectory()) {
+            return res.status(400).json({ error: `Path is not a directory: ${targetPath}`, files: [], directories: [] });
+        }
+        
+        const items = fs.readdirSync(targetPath, { withFileTypes: true });
+        const files = items
+            .filter(item => item.isFile())
+            .map(item => ({
+                name: item.name,
+                path: path.join(targetPath, item.name),
+                size: fs.statSync(path.join(targetPath, item.name)).size,
+                modified: fs.statSync(path.join(targetPath, item.name)).mtime.toISOString(),
+            }));
+        
+        const directories = items
+            .filter(item => item.isDirectory())
+            .map(item => ({
+                name: item.name,
+                path: path.join(targetPath, item.name),
+                size: 0,
+                modified: fs.statSync(path.join(targetPath, item.name)).mtime.toISOString(),
+            }));
+        
+        res.json({ files, directories });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, files: [], directories: [] });
+    }
+});
+
+/** GET /api/fs/read?path=<file>  → { content: string, error?: string } */
+app.get('/api/fs/read', (req, res) => {
+    const filePath = req.query.path as string;
+    
+    if (!filePath) {
+        return res.status(400).json({ error: 'path parameter is required' });
+    }
+    
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: `File not found: ${filePath}` });
+        }
+        
+        const stats = fs.statSync(filePath);
+        if (!stats.isFile()) {
+            return res.status(400).json({ error: `Path is not a file: ${filePath}` });
+        }
+        
+        const content = fs.readFileSync(filePath, 'utf-8');
+        res.json({ content });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/** POST /api/fs/write  { path: string, content: string }  → { success: boolean, error?: string } */
+app.post('/api/fs/write', (req, res) => {
+    const { path: filePath, content } = req.body;
+    
+    if (!filePath || content === undefined) {
+        return res.status(400).json({ success: false, error: 'path and content are required' });
+    }
+    
+    try {
+        // Create directory if it doesn't exist
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        fs.writeFileSync(filePath, content, 'utf-8');
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/** POST /api/fs/mkdir  { path: string }  → { success: boolean, error?: string } */
+app.post('/api/fs/mkdir', (req, res) => {
+    const { path: dirPath } = req.body;
+    
+    if (!dirPath) {
+        return res.status(400).json({ success: false, error: 'path is required' });
+    }
+    
+    try {
+        fs.mkdirSync(dirPath, { recursive: true });
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/** DELETE /api/fs/delete?path=<file>  → { success: boolean, error?: string } */
+app.delete('/api/fs/delete', (req, res) => {
+    const filePath = req.query.path as string;
+    
+    if (!filePath) {
+        return res.status(400).json({ success: false, error: 'path parameter is required' });
+    }
+    
+    try {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ success: false, error: `Path not found: ${filePath}` });
+        }
+        
+        const stats = fs.statSync(filePath);
+        if (stats.isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(filePath);
+        }
+        
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─── END FILE SYSTEM ENDPOINTS ─────────────────────────────────────────────
 
 app.post('/search', async (req, res) => {
     const { query, maxResults = 5 } = req.body;

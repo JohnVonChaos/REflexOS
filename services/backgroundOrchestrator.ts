@@ -11,7 +11,9 @@ class BackgroundOrchestrator {
   private intervalId: any = null;
   private options: OrchestratorOptions;
   private running = false;
+  private isProcessing = false;
   private lastRunByStage: Map<string, number> = new Map();
+  private lastSubconsciousRun = 0;
 
   constructor(opts?: OrchestratorOptions) {
     this.options = { intervalMs: 5000, idleMs: 30000, ...(opts || {}) };
@@ -27,24 +29,16 @@ class BackgroundOrchestrator {
   stop() {
     if (this.intervalId) clearInterval(this.intervalId);
     this.running = false;
+    this.isProcessing = false;
     loggingService.log('INFO', 'Background orchestrator stopped.');
   }
 
   async cycle() {
+    if (this.isProcessing) return;
+    this.isProcessing = true;
+
     try {
-      // Orchestrator notes:
-      // - Scheduled per-stage background cycles respect a per-stage
-      //   `backgroundRunMode` setting. Default is 'chained' which executes
-      //   Subconscious -> Conscious -> Synthesis in order. If a stage sets
-      //   `backgroundRunMode: 'independent'` the orchestrator will run only
-      //   the synthesis cycle for that stage (useful for lightweight recurring
-      //   maintenance tasks).
-
-      // - Idle-mode cycles also run the chained cycle by default so that
-      //   background cognition follows the same internal ordering as active
-      //   pipeline executions.
-
-      // Check Lüscher profile freshness and emit refresh-needed event if appropriate
+      // Check Lüscher profile freshness
       try {
         const profile = await getLatestLuescherProfile();
         if (shouldRefreshProfile(profile)) {
@@ -65,11 +59,15 @@ class BackgroundOrchestrator {
       const now = Date.now();
       const idle = !lastUser || (now - (lastUser.timestamp || 0) > (this.options.idleMs || 30000));
 
-      // If not idle, still run per-workflow scheduled background cycles
+      const session = await sessionService.loadSession();
+      const workflow = session?.aiSettings?.workflow || [];
+      const backgroundWorkflow = session?.aiSettings?.backgroundWorkflow || [];
+      const providers = session?.aiSettings?.providers || ({} as any);
+
+      // 1. Run per-workflow scheduled background cycles (even if not idle)
       try {
-        const session = await sessionService.loadSession();
-        const workflow = session?.aiSettings?.workflow || [];
         for (const stage of workflow) {
+          if (!stage.enabled) continue;
           const minutes = stage.backgroundIntervalMinutes;
           if (!minutes || minutes <= 0) continue;
           const last = this.lastRunByStage.get(stage.id) || 0;
@@ -77,16 +75,12 @@ class BackgroundOrchestrator {
           if (now - last >= intervalMs) {
             loggingService.log('INFO', `Orchestrator: running scheduled background cycle for stage ${stage.name}`, { stageId: stage.id, minutes });
             try {
-              // Run chained subconscious -> conscious -> synthesis cycle for the scheduled stage
               const roleSetting = { enabled: true, provider: stage.provider as any, selectedModel: stage.selectedModel };
-              const session = await sessionService.loadSession();
-              const providers = session?.aiSettings?.providers;
-              // Respect per-stage run mode: 'independent' runs only synthesis, otherwise run the chained cycle
               const runMode = (stage as any).backgroundRunMode || 'chained';
               if (runMode === 'independent') {
                 await backgroundCognitionService.runSynthesisCycle(all, Math.floor(Date.now() / 1000));
               } else {
-                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000), roleSetting as any, providers as any);
+                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000), roleSetting as any, providers);
               }
             } catch (e) {
               loggingService.log('ERROR', `Scheduled background cycle for stage ${stage.id} failed`, { error: e });
@@ -98,30 +92,47 @@ class BackgroundOrchestrator {
         loggingService.log('DEBUG', 'Failed to run per-workflow scheduled background cycles', { error: e });
       }
 
-      // If idle, run the default randomized background cycle as before
-      if (!idle) return;
-      // Weighted selection: research (30%), synthesis (50%), reflection (20%)
-      const r = Math.random();
-      if (r < 0.3) {
-        loggingService.log('INFO', 'Orchestrator: running web search cycle (research).');
-        await backgroundCognitionService.runWebSearchCycle({ messages: all, projectFiles: [], contextFileNames: [], selfNarrative: '', rcb: undefined }, { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' }, ({} as any));
-      } else if (r < 0.8) {
-        loggingService.log('INFO', 'Orchestrator: running chained synthesis cycle.');
-        await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000));
-      } else {
-        loggingService.log('INFO', 'Orchestrator: running reflection cycle.');
-
-        await backgroundCognitionService.runReflectionCycle(all, Math.floor(Date.now() / 1000));
+      // 2. If idle, continuously run Background Cognition Dual Process (if configured) OR legacy cycles
+      if (idle) {
+        const enabledBgStages = backgroundWorkflow.filter(s => s.enabled);
+        
+        // Prevent spanning idle loops too rapidly; limit general idle cycles to once every 15s
+        if (now - this.lastSubconsciousRun >= 15000) {
+            this.lastSubconsciousRun = now;
+            
+            if (enabledBgStages.length > 0) {
+              loggingService.log('INFO', 'Orchestrator: Running Dual Process idle loop.');
+              const context = { messages: all, projectFiles: [], contextFileNames: [], selfNarrative: '', rcb: undefined };
+              await backgroundCognitionService.runDualProcessCycle(context, providers, enabledBgStages);
+            } else {
+              // Legacy Randomized Cycles (Fallback if no background stages are defined)
+              const r = Math.random();
+              if (r < 0.3) {
+                loggingService.log('INFO', 'Orchestrator: running web search cycle (research).');
+                const insight = await backgroundCognitionService.runWebSearchCycle({ messages: all, projectFiles: [], contextFileNames: [], selfNarrative: '', rcb: undefined }, { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' }, providers, []);
+                if (insight && insight.insight) {
+                    await memoryService.createAtom({ type: 'steward_note', text: insight.insight, role: 'model', isInContext: false });
+                }
+              } else if (r < 0.8) {
+                loggingService.log('INFO', 'Orchestrator: running chained synthesis cycle.');
+                await backgroundCognitionService.runChainedCycle(all, Math.floor(Date.now() / 1000));
+              } else {
+                loggingService.log('INFO', 'Orchestrator: running reflection cycle.');
+                await backgroundCognitionService.runReflectionCycle(all, Math.floor(Date.now() / 1000));
+              }
+            }
+        }
       }
 
-      // Run scheduled tasks
+      // Run scheduled tasks (like the distinct web_research scheduler)
       await scheduler.tick();
     } catch (e) {
       loggingService.log('ERROR', 'Background orchestrator cycle failed', { error: e });
+    } finally {
+      this.isProcessing = false;
     }
   }
 }
-
 
 // Simple Scheduler Implementation
 export interface Task {
@@ -133,22 +144,29 @@ export interface Task {
 
 class Scheduler {
   private tasks: Task[] = [];
+  private isTicking = false;
 
   register(task: Task) {
     this.tasks.push(task);
   }
 
   async tick() {
-    const now = Date.now();
-    for (const task of this.tasks) {
-      if (!task.lastRun || now - task.lastRun >= task.intervalMs) {
-        task.lastRun = now;
-        try {
-          await task.run();
-        } catch (e) {
-          console.error(`Task ${task.id} failed:`, e);
+    if (this.isTicking) return;
+    this.isTicking = true;
+    try {
+        const now = Date.now();
+        for (const task of this.tasks) {
+          if (!task.lastRun || now - task.lastRun >= task.intervalMs) {
+            task.lastRun = now;
+            try {
+              await task.run();
+            } catch (e) {
+              console.error(`Task ${task.id} failed:`, e);
+            }
+          }
         }
-      }
+    } finally {
+        this.isTicking = false;
     }
   }
 }
