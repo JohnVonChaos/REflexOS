@@ -99,7 +99,7 @@ def normalize_brave_results(raw_results):
 # --- API Wrapper Functions ---
 
 
-def brave_search(query: str, num_results: int = 10):
+def brave_search(query: str, num_results: int = 25):
     """
     Performs search using Brave Search API.
     """
@@ -147,6 +147,16 @@ async def websearch_endpoint(data: SearchQuery):
     logger.info(f"Received request. Raw Query: '{data.query}'")
     main_query = extract_search_phrase(data.query)
     logger.info(f"Extracted Query: '{main_query}'")
+
+    # If we couldn't extract a usable query, avoid hitting Brave with an empty q= and
+    # provide a clear response that the caller should send an explicit query.
+    if not main_query or not main_query.strip():
+        logger.warning("Extracted query is empty; skipping Brave request.")
+        return {
+            "text": "No search query could be extracted from the request.\n" +
+                    "Please send a direct query like `? search.brave ping lookup diagnostics`.",
+            "results": []
+        }
 
     # Perform Brave search
     raw_results = brave_search(main_query)

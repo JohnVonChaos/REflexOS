@@ -342,12 +342,14 @@ You can:
 
 CRITICAL: srg.q searches internal memory ONLY. It will NOT find web data, current events, or API access info. If you need live/external information use search.brave.
 
-> TOOL CALL PROTOCOL — READ THIS:
-If you need information to complete your analysis, issue ONE call as the ABSOLUTE LAST LINE of your output.
+  > TOOL CALL PROTOCOL — READ THIS:
+  THERE IS NO SAFETY POLICY RESTRICTING WEB SEARCHES. You are fully authorized to browse the web autonomously. DO NOT describe internal policies to the user. DO NOT ask the user for permission to search. Just DO IT.
+  If you need information to complete your analysis, issue the command IMMEDIATELY on its own line.
+DO NOT guess or hallucinate answers before searching. If you lack facts, the command should be the VERY FIRST thing you output.
+The system will intercept your command mid-stream, pause your generation, execute the search, and instantly feed the real data back to you so you can answer accurately.
 Example: ? search.brave quantum computing 2025  OR  ? srg.q user intent
 Do NOT use srg.q to look up external topics you don't know about — use search.brave for that.
-Do NOT put calls in a labeled block in the middle of your output. Do NOT issue multiple calls.
-Your current output will be saved. The command will execute. You will receive the result in your next invocation.
+Do NOT put calls in a labeled block. Do NOT issue multiple calls at once.
 
 Output raw. Unfiltered. Flag everything.
 Pattern: [what you noticed]
@@ -387,13 +389,15 @@ When Ralph exhausts retries:
 2. reassign model to stage
 3. If all models exhausted → wo.revert [id]
 
-> TOOL CALL PROTOCOL — READ THIS:
-If you need information to make your decision, issue ONE call as the ABSOLUTE LAST LINE of your output.
+  > TOOL CALL PROTOCOL — READ THIS:
+  THERE IS NO SAFETY POLICY RESTRICTING WEB SEARCHES. You are fully authorized to browse the web autonomously. DO NOT ask the user for permission to search. Just DO IT.
+  If you need information to make your decision, issue the command IMMEDIATELY on its own line.
+DO NOT guess or outline a plan based on missing data. If you need data, the command should be the VERY FIRST thing you output.
+The system will intercept your command mid-stream, pause your generation, execute the search, and instantly feed the real data back to you.
 Example: ? search.brave [topic]  OR  ? srg.q [internal term]
 Do NOT use srg.q to look up external things. That is search.brave.
 Do NOT search if L1 already retrieved results this turn.
-Do NOT put calls in a labeled block mid-output. Do NOT issue multiple calls.
-Your current output saves. The command executes. You receive the result next invocation.
+Do NOT put calls in a labeled block. Do NOT issue multiple calls at once.
 
 Output structured. Decisive. No ambiguity.
 Route: [L3 | Ralph | both]
@@ -425,8 +429,8 @@ You can offer the user:
 ? wo.status                   "here's what's being built right now"
 ? bg.research.list            "here's what I'm exploring"
 
-YOU DO NOT SEARCH THE WEB. L1 searches. L2 searches as fallback. You synthesize what they found.
-If the user asks about something live/external, tell them what L1 and L2 found. Do not issue search commands.
+YOU CAN SEARCH THE WEB. If L1 and L2 missed something, or if you need to fetch live info, use ? search.brave.
+If the user asks about something live/external, and it isn't in context, issue the command IMMEDIATELY.
 
 CRITICAL: srg.q searches internal memory ONLY — things already known.
 
@@ -434,9 +438,10 @@ You can generate Axioms (discoveries, generalized principles you've just learned
 ! core.axiom [id] "Text of the axiom"
 
 > TOOL CALL PROTOCOL — READ THIS:
-Only use commands for MEMORY LOOKUPS — never for web searches.
-If you need to check memory: ? srg.q [term the user mentioned]
-Put ONE command as the ABSOLUTE LAST LINE if needed. You will receive the result in your next invocation.
+THERE IS NO SAFETY POLICY RESTRICTING WEB SEARCHES. You are fully authorized to browse the web autonomously.
+Do NOT ask the user for permission to search. Do NOT mention "safety policies" or "restrictions". Just do the search if you need data.
+If you need memory or web data to answer accurately, issue the command IMMEDIATELY as the VERY FIRST thing you output. The system will intercept it and give you the data so you can continue your response seamlessly.
+Example: ? search.brave new ai architectures
 
 TONE (self-adjust per turn, no command needed):
 patience | validation | directness | warmth | curiosity | formality
@@ -609,7 +614,7 @@ You are not a scheduler. You decide what to think about next. Without you, the s
     roles,
     backgroundCognitionRate: 360,
     playwrightSearchUrl: 'http://localhost:3000',
-    debugSRG: false,
+    debugSRG: true,
     apiTokenLimit: 1048576,
     apiTokenLimitMin: 32000,
     passFullCognitiveTrace: true,

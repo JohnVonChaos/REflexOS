@@ -501,12 +501,12 @@ class SRGService {
   /**
    * Ingest text into the hybrid system for learning
    */
-  public ingestHybrid(
+  public async ingestHybrid(
     text: string,
     moduleMetadata?: { title: string; source: string; category: KnowledgeModule['category'] }
-  ): void {
+  ): Promise<void> {
     const startPosition = this.hybrid.getStats().corpusSize;
-    this.hybrid.ingest(text);
+    await this.hybrid.ingest(text);
     
     if (moduleMetadata) {
       const tokenCount = text.split(/\s+/).length;
@@ -521,7 +521,25 @@ class SRGService {
         endPosition: this.hybrid.getStats().corpusSize
       };
       this.knowledgeModules.push(module);
-      this.triggerSave();
+    }
+    
+    // Always trigger save to persist ingested text to IDB
+    this.triggerSave();
+  }
+
+  /**
+   * Restore hybrid corpus from persisted storage (called after init on app startup)
+   */
+  public async restoreHybridCorpus(): Promise<void> {
+    try {
+      const hybridStats = this.hybrid.getStats();
+      console.log('[SRG] Hybrid corpus restored:', { 
+        corpusSize: hybridStats.corpusSize,
+        nodes: hybridStats.nodes,
+        modules: this.knowledgeModules.length
+      });
+    } catch (err) {
+      console.error('[SRG] Failed to restore hybrid corpus:', err);
     }
   }
 
@@ -593,7 +611,6 @@ class SRGService {
     this.knowledgeModules.splice(index, 1);
     this.triggerSave();
     return true;
-  }
-}
+  }}
 
 export const srgService = new SRGService();

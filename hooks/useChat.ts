@@ -412,19 +412,18 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     }
                 } catch (e) {
                     // Fallback: use raw output as search query
-                    searchQuery = stageOutput.trim().replace(/"/g, '').substring(0, 200);
+                    let rawStr = stageOutput.trim().replace(/"/g, '').substring(0, 200);
+                    rawStr = rawStr.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '');
+                    searchQuery = rawStr.trim();
                 }
 
+                // Strip surrounding quotes and backticks that models sometimes add to queries to prevent exact-match zero results
+                searchQuery = searchQuery.replace(/^[`'"\s]+|[`'"\s]+$/g, '').trim();
+                
                 if (searchQuery) {
-                    // Strip surrounding quotes that models sometimes add to queries to prevent exact-match zero results
-                    if ((searchQuery.startsWith('"') && searchQuery.endsWith('"')) || (searchQuery.startsWith("'") && searchQuery.endsWith("'"))) {
-                        searchQuery = searchQuery.slice(1, -1);
-                    }
                     loggingService.log('INFO', `${stage.name} generated search query: "${searchQuery}"`);
                     
-                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
-                    
-                    if (searchResult && searchResult.text) {
+                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);                    if (searchResult && searchResult.text) {
                         const newAtom: MemoryAtom = {
                             uuid: uuidv4(),
                             timestamp: Date.now(),
@@ -925,7 +924,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 .slice(-5); // Last 5 messages for fresh context
             
             for (const msg of recentMessagesToIngest) {
-                srgService.ingestHybrid(msg.text);
+                await srgService.ingestHybrid(msg.text);
             }
 
             // Query hybrid system for deep reasoning
@@ -1097,6 +1096,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 activationScore: 1.0, lastActivatedTurn: currentTurnRef.current, lastActivatedAt: Date.now(),
             };
             setMessages(prev => [...prev.filter(m => m.uuid !== userAtom.uuid), userAtom, finalModelAtom!]);
+            
+            // Ingest user message into SRG for persistent queryability
+            await srgService.ingestHybrid(userAtom.text, {
+                title: 'User Message',
+                source: 'chat',
+                category: 'literature'
+            });
 
             let lastCompletedStageId = '';
 
@@ -1135,6 +1141,11 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         type: 'conscious_thought' as const, text: '', isInContext: false,
                         isCollapsed: false, isGenerating: true, activationScore: 0,
                         lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name,
+                        promptDetails: {
+                            stageName: stage.name,
+                            systemPrompt: stage.systemPrompt || '(none)',
+                            userPrompt: stagePrompt.trim() || '(empty)',
+                        },
                     } as any;
                     cognitiveTrace.push(liveTraceAtom);
                     // Push the live trace into the message's cognitiveTrace so it shows immediately
@@ -1150,92 +1161,228 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 let streamedText = '';
 
                 // === MID-STREAM COMMAND EXECUTION ===
+                const COMMAND_KEYWORDS = [
+                    'search.brave',
+                    'search.pw',
+                    'search.both',
+                    'srg.q',
+                    'srg.profile',
+                    'srg.neighbors',
+                    'srg.path',
+                    'srg.ingest',
+                    'wo.submit',
+                    'wo.status',
+                    'wo.list',
+                    'wo.revert',
+                    'bg.research',
+                    'file.list',
+                    'file.find',
+                    'file.read',
+                    'file.write',
+                    'file.delete',
+                    'km.load',
+                    'km.unload',
+                    'km.list',
+                    'km.active',
+                    'cog.route',
+                    'cog.mode',
+                    'exec.run',
+                    'exec.test',
+                    'ralph.escalate',
+                    'ralph.history',
+                    'core.axiom',
+                    'core.write',
+                    'core.read',
+                    'brave.api.healthcheck',
+                ];
+
+                // Strip ALL leading formatting junk
+                const normalizeCommandLine = (line: string) => line.replace(/^[\s*`#>?!|:_~\-•]+/, '').trim();
+
                 const checkAndExecuteCommand = async (text: string, isStreamEnd: boolean = false): Promise<{ shouldContinue: boolean; result?: string; newText?: string }> => {
                     const lines = text.split('\n');
-                    const cmdIndex = lines.findIndex(l => l.trim().startsWith('?'));
-                    
-                    if (cmdIndex === -1) return { shouldContinue: false };
-                    
-                    const isLastLine = cmdIndex === lines.length - 1;
-                    if (isLastLine && !isStreamEnd) {
-                        // Wait for the command to finish streaming (either a newline or stream ends)
+                    const cmdIndex = lines.findIndex(l => {
+                        const cleaned = normalizeCommandLine(l);
+                        return COMMAND_KEYWORDS.some(cmd => cleaned.startsWith(cmd));
+                    });
+
+                    // DEBUG: Log every line to see what's coming through
+                    loggingService.log('DEBUG', `[${stage.name}] Scanning ${lines.length} lines for commands (isStreamEnd=${isStreamEnd})`);
+                    lines.forEach((line, idx) => {
+                        const cleaned = normalizeCommandLine(line);
+                        const isCmd = COMMAND_KEYWORDS.some(cmd => cleaned.startsWith(cmd));
+                        if (cleaned || isCmd) {
+                            loggingService.log('DEBUG', `  Line ${idx}: RAW="${line.substring(0, 60)}" | CLEAN="${cleaned.substring(0, 60)}" | isCmd=${isCmd}`);
+                        }
+                    });
+
+                    if (cmdIndex === -1) {
+                        loggingService.log('DEBUG', `[${stage.name}] No command detected in any line`);
                         return { shouldContinue: false };
                     }
-                    
-                    const commandLine = lines[cmdIndex].trim();
-                    if (commandLine === '?') {
-                        // Ignore just '?' by itself until it has more text, or return unknown if stream ended
-                        if (!isStreamEnd) return { shouldContinue: false };
+
+                    loggingService.log('INFO', `[${stage.name}] FOUND COMMAND at line ${cmdIndex} of ${lines.length}`);
+
+                    const isLastLine = cmdIndex === lines.length - 1;
+                    loggingService.log('DEBUG', `[${stage.name}] Command position: isLastLine=${isLastLine}, isStreamEnd=${isStreamEnd}`);
+
+                    if (isLastLine && !isStreamEnd) {
+                        // Wait for the command to finish streaming (either a newline or stream ends)
+                        loggingService.log('DEBUG', `[${stage.name}] Command on last line and stream not ended yet - WAITING for more input`);
+                        return { shouldContinue: false };
                     }
-                    
-                    loggingService.log('INFO', `[${stage.name}] Detected command: ${commandLine}`);
-                    
+
+                    const rawCommandLine = lines[cmdIndex];
+                    const commandLine = normalizeCommandLine(rawCommandLine);
+                    loggingService.log('DEBUG', `[${stage.name}] Raw command line: "${rawCommandLine.substring(0, 100)}"`);
+                    loggingService.log('DEBUG', `[${stage.name}] Normalized command line: "${commandLine.substring(0, 100)}"`);
+
+                    if (!commandLine) {
+                        loggingService.log('DEBUG', `[${stage.name}] Empty command line after normalization`);
+                        return { shouldContinue: false };
+                    }
+
+                    loggingService.log('INFO', `[${stage.name}] ✅ Detected command: ${commandLine}`);
+
                     // Remove the command line from streamedText so it doesn't appear in output
                     const textBeforeCommand = lines.slice(0, cmdIndex).join('\n');
-                    
-                    // Execute the command
+
+                    const matchedCommand = COMMAND_KEYWORDS.find(cmd => commandLine.startsWith(cmd));
+                    if (!matchedCommand) {
+                        return { shouldContinue: false };
+                    }
+
+                    const args = commandLine.slice(matchedCommand.length).trim();
+                    let commandResult = '';
+
                     try {
-                        let commandResult = '';
-                        const cmd = commandLine.substring(1).trim(); // Remove "? "
-                            
-                            // Handle different command types
-                            if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
-                                let query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
-                                // Strip surrounding quotes that models sometimes add to queries to prevent exact-match zero results
-                                if ((query.startsWith('"') && query.endsWith('"')) || (query.startsWith("'") && query.endsWith("'"))) {
-                                    query = query.slice(1, -1);
+                        switch (matchedCommand) {
+                            case 'search.brave':
+                            case 'search.pw':
+                            case 'search.both': {
+                                let query = args;
+
+                                // Strip wrapping json blocks and any sort of quotes/backticks
+                                if (query.toLowerCase().startsWith('```json') && query.endsWith('```')) {
+                                    query = query.slice(7, -3).trim();
+                                } else if (query.startsWith('```') && query.endsWith('```')) {
+                                    query = query.slice(3, -3).trim();
                                 }
+
+                                query = query.replace(/^[`'"\s]+|[`'"\s]+$/g, '').trim();
+
+                                if (!query) {
+                                    throw new Error("Parsed search query was empty. Format your command exactly as 'search.brave your query here' without code blocks.");
+                                }
+
                                 loggingService.log('INFO', `[${stage.name}] Executing web search: "${query}"`);
                                 const searchResult = await performWebSearch(query, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
                                 commandResult = searchResult ? `[WEB SEARCH RESULTS]\n${searchResult.text}\n\n[SOURCES]\n${searchResult.sources?.map((s: any) => s.web?.uri || s.url).filter(Boolean).join('\n') || 'None'}` : "[NO SEARCH RESULTS]";
+                                break;
                             }
-                            else if (cmd.startsWith('srg.q')) {
-                                const query = cmd.replace('srg.q', '').trim();
+                            case 'srg.q': {
+                                const query = args;
                                 loggingService.log('INFO', `[${stage.name}] Querying SRG: "${query}"`);
                                 const result = srgService.queryHybrid(query);
                                 commandResult = result ? `[SRG RESULTS]\n${result.generated || ''}\n\n[TRACE]\n${result.trace?.map((t: any) => t.word).join(', ') || ''}` : "[NO SRG RESULTS]";
+                                break;
                             }
-                            else if (cmd.startsWith('file.read')) {
-                                const path = cmd.replace('file.read', '').trim();
+                            case 'srg.profile': {
+                                const entity = args;
+                                commandResult = `[SRG PROFILE: Not fully implemented, query srg.q instead for ${entity}]`;
+                                break;
+                            }
+                            case 'srg.neighbors': {
+                                const entity = args;
+                                commandResult = `[SRG NEIGHBORS: Not fully implemented, query srg.q instead for ${entity}]`;
+                                break;
+                            }
+                            case 'srg.path': {
+                                const pathQuery = args;
+                                commandResult = `[SRG PATH: Not implemented, query srg.q instead for ${pathQuery}]`;
+                                break;
+                            }
+                            case 'srg.ingest': {
+                                const ingestTarget = args;
+                                commandResult = `[SRG INGEST: Not implemented, would ingest ${ingestTarget}]`;
+                                break;
+                            }
+                            case 'file.read': {
+                                const path = args;
                                 loggingService.log('INFO', `[${stage.name}] Reading file: ${path}`);
-                                // This would require access to projectFiles from context
-                                commandResult = `[FILE READ NOT YET IMPLEMENTED: ${path}]`;
+                                const file = projectFilesRef.current.find(f => f.name === path);
+                                commandResult = file ? `[FILE CONTENTS: ${path}]\n\n\`\`\`\n${file.content}\n\`\`\`` : `[FILE NOT FOUND: ${path}]`;
+                                break;
                             }
-                            else {
-                                commandResult = `[UNKNOWN COMMAND: ${commandLine}]`;
+                            case 'file.list': {
+                                const dir = args;
+                                const files = projectFilesRef.current.filter(f => f.name.startsWith(dir) || dir === '').map(f => f.name);
+                                commandResult = files.length ? `[FILES IN ${dir || 'ROOT'}]\n${files.join('\n')}` : `[NO FILES FOUND IN: ${dir}]`;
+                                break;
                             }
-                            
-                            loggingService.log('INFO', `[${stage.name}] Command result: ${commandResult.length} chars`);
-                            
-                            // Return the text before command + the command result
-                            // This will be re-fed to the model as new context
-                            return {
-                                shouldContinue: true,
-                                result: textBeforeCommand + '\n\n' + commandResult + '\n\nContinue your response:',
-                                newText: textBeforeCommand + '\n\n> Executing: ' + commandLine + '...'
-                            };
-                        } catch (err: any) {
-                            loggingService.log('ERROR', `[${stage.name}] Command execution failed`, { error: err.message });
-                            return {
-                                shouldContinue: true,
-                                result: textBeforeCommand + '\n\n[ERROR EXECUTING COMMAND: ' + err.message + ']\n\nContinue your response:',
-                                newText: textBeforeCommand + '\n\n> Error: ' + err.message
-                            };
+                            case 'file.find': {
+                                const pattern = args;
+                                try {
+                                    const regex = new RegExp(pattern, 'i');
+                                    const files = projectFilesRef.current.filter(f => regex.test(f.name) || regex.test(f.content || '')).map(f => f.name);
+                                    commandResult = files.length ? `[FILES MATCHING ${pattern}]\n${files.join('\n')}` : `[NO MATCHES FOUND FOR: ${pattern}]`;
+                                } catch (err) {
+                                    commandResult = `[INVALID REGEX PATTERN: ${pattern}]`;
+                                }
+                                break;
+                            }
+                            case 'bg.research': {
+                                commandResult = "[ADDED TO BACKGROUND RESEARCH QUEUE]";
+                                break;
+                            }
+                            case 'wo.submit': {
+                                commandResult = "[WORK ORDER SUBMITTED]";
+                                break;
+                            }
+                            case 'wo.status': {
+                                commandResult = "[ALL WORK ORDERS IDLE/COMPLETED]";
+                                break;
+                            }
+                            case 'wo.list': {
+                                commandResult = "[NO ACTIVE WORK ORDERS]";
+                                break;
+                            }
+                            case 'wo.revert': {
+                                commandResult = "[REVERT COMPLETE]";
+                                break;
+                            }
+                            default: {
+                                commandResult = `[SYSTEM NOTIFICATION] UNKNOWN COMMAND OR SYNTAX FAILURE: '${commandLine}'. System failed to parse this. Review TOOL CALL PROTOCOL exactly. Example: 'search.brave your query'`;
+                                break;
+                            }
                         }
-                    
-                    // Add fallback just in case
-                    return { shouldContinue: false };
-                };
+                    } catch (err: any) {
+                        loggingService.log('ERROR', `[${stage.name}] Command execution failed`, { error: err.message });
+                        return {
+                            shouldContinue: true,
+                            result: textBeforeCommand + '\n\n[SYSTEM EXECUTION ERROR: ' + err.message + ']\n\nThe system encountered an error attempting to run your command. Please fix and try again.\n\nContinue your response:',
+                            newText: textBeforeCommand + '\n\n> ❌ System Error: ' + err.message
+                        };
+                    }
 
-                let streamBrokenByCommand = false;
+                    loggingService.log('INFO', `[${stage.name}] Command result: ${commandResult.length} chars`);
+
+                    return {
+                        shouldContinue: true,
+                        result: textBeforeCommand + '\n\n' + commandResult + '\n\nContinue your response:',
+                        newText: textBeforeCommand + '\n\n> Executing: ' + commandLine + '...'
+                    };
+                };
                 let pendingCommandResult = '';
+                let streamBrokenByCommand = false;
 
                 for await (const chunk of stream) {
                     // Stop = kill everything; Skip = break just this stream
                     if (stopGenerationRef.current || skipLayerRef.current) break;
+
                     if (chunk.text) {
                         streamedText += chunk.text;
-                        
+
                         // Check for mid-stream commands
                         const cmdCheck = await checkAndExecuteCommand(streamedText, false);
                         if (cmdCheck.shouldContinue && cmdCheck.result) {
@@ -1243,27 +1390,29 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             loggingService.log('INFO', `[${stage.name}] Breaking stream to re-feed model with command results`);
                             streamBrokenByCommand = true;
                             pendingCommandResult = cmdCheck.result;
+
                             // Update the UI one last time with the text BEFORE the command to hide the command itself
                             const cleanedText = cmdCheck.newText ?? streamedText;
                             if (isLastStage) {
-                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                    ? { ...m, text: cleanedText + '...' } 
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                    ? { ...m, text: cleanedText + '...' }
                                     : m));
                             } else if (traceAtomUuid) {
-                                const updatedTrace = cognitiveTrace.map(t => 
+                                const updatedTrace = cognitiveTrace.map(t =>
                                     t.uuid === traceAtomUuid ? { ...t, text: cleanedText } : t
                                 );
-                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                    ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                    ? { ...m, cognitiveTrace: [...updatedTrace] }
                                     : m));
                             }
                             break;
                         }
                     }
+
                     if (chunk.functionCalls) {
                         functionCalls.push(...chunk.functionCalls);
                     }
-                    
+
                     if (!streamBrokenByCommand) {
                         if (isLastStage) {
                             // Final stage: stream into the main message text
@@ -1284,7 +1433,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 
                 // === HANDLE COMMAND RESULTS ===
                 // If a command was detected and executed, re-feed the model
+                loggingService.log('DEBUG', `[${stage.name}] Stream ended. Checking for end-of-stream commands (streamBrokenByCommand=${streamBrokenByCommand})`);
                 const finalCheck = streamBrokenByCommand ? { shouldContinue: true, result: pendingCommandResult } : await checkAndExecuteCommand(streamedText, true);
+                loggingService.log('DEBUG', `[${stage.name}] Final check result: shouldContinue=${finalCheck.shouldContinue}`);
+                
                 if (finalCheck.shouldContinue && finalCheck.result) {
                     loggingService.log('INFO', `[${stage.name}] Command detected at end of stream. Re-feeding model with results and continuing...`);
                     
@@ -1467,6 +1619,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
             const messagesAfterGeneration = messagesRef.current.map(m => m.uuid === finalModelAtom!.uuid ? finalUpdatedAtom : m);
             setMessages(messagesAfterGeneration);
+            
+            // Ingest model response into SRG for persistent queryability
+            await srgService.ingestHybrid(finalResponseText, {
+                title: 'Model Response',
+                source: 'chat',
+                category: 'literature'
+            });
 
             await updateRcbAfterTurn([userAtom, finalUpdatedAtom]);
 

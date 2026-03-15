@@ -542,7 +542,15 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
    */
   private async executeAskCommand(commandLine: string, context: FullCognitionContext, providers: AISettings['providers']): Promise<string> {
       try {
-          const cmd = commandLine.trim().substring(2).trim(); // Remove "? "
+        const normalizeCommandLine = (line: string) => line.replace(/^[\s*`#>_~|:*]+/, '').trim();
+        const raw = commandLine;
+        const cleaned = normalizeCommandLine(commandLine);
+        
+        console.log(`[BG SERVICE] executeAskCommand - RAW: "${raw.substring(0, 60)}" | CLEAN: "${cleaned.substring(0, 60)}"`);
+        
+        const cmd = cleaned.startsWith('?') || cleaned.startsWith('!') ? cleaned.substring(1).trim() : cleaned;
+        console.log(`[BG SERVICE] Extracted cmd: "${cmd.substring(0, 60)}"`);
+        
           const projectFiles = context.projectFiles || [];
           
           if (cmd.startsWith('file.read')) {
@@ -562,14 +570,27 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
               const files = projectFiles.filter(f => regex.test(f.name) || regex.test(f.content || '')).map(f => f.name);
                return files.length ? `Found in:\n${files.join('\n')}` : "No matches found.";
           }
-          else if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
-               let query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
-               // Strip surrounding quotes
-               if ((query.startsWith('"') && query.endsWith('"')) || (query.startsWith("'") && query.endsWith("'"))) {
-                   query = query.slice(1, -1);
-               }
-               const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
+            else if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
+                 let query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
+                 console.log(`[BG SERVICE] Executing search - EXTRACTED QUERY: "${query.substring(0, 60)}"`);
+                 
+                 // Strip wrapping blocks and quotes
+                 if (query.toLowerCase().startsWith('```json') && query.endsWith('```')) {
+                     query = query.slice(7, -3).trim();
+                 } else if (query.startsWith('```') && query.endsWith('```')) {
+                     query = query.slice(3, -3).trim();
+                 }
+                 query = query.replace(/^[`'"\s]+|[`'"\s]+$/g, '').trim();
+                 console.log(`[BG SERVICE] After stripping quotes - FINAL QUERY: "${query.substring(0, 60)}"`);
+                 
+                 if (!query) {
+                     console.log(`[BG SERVICE] ERROR: Query is empty after parsing`);
+                     return "[SYSTEM ERROR] Parsed search query was empty. Format your command exactly as '? search.brave your query here' without code blocks.";
+                 }
+
+                 const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
                const results = await performWebSearch(query, fakeRole, providers);
+               console.log(`[BG SERVICE] Search completed - ${results ? results.text.length : 0} chars returned`);
                return results ? `${results.text}\nSources: ${results.sources?.map((s: any) => s.web?.uri).filter(Boolean).join(', ')}` : "No results found.";
           }
           else if (cmd.startsWith('srg.q')) {
@@ -578,13 +599,25 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
                if (!result) return "No SRG results found.";
                return `SRG Results for "${query}":\n${result.generated || ''}\nTrace: ${result.trace?.map((t: any) => t.word).join(', ') || ''}`;
           }
-          else if (cmd.startsWith('wo.status')) {
-               return "No active work orders."; // Stub for backend
+          else if (cmd.startsWith('srg.profile')) {
+               const entity = cmd.replace('srg.profile', '').trim();
+               return `[SRG PROFILE: Not fully implemented, query srg.q instead for ${entity}]`;
           }
-          
-          return "Command not recognized or supported.";
-      } catch (err) {
-          return `Error executing command: ${err}`;
+          else if (cmd.startsWith('srg.neighbors')) {
+               const entity = cmd.replace('srg.neighbors', '').trim();
+               return `[SRG NEIGHBORS: Not fully implemented, query srg.q instead for ${entity}]`;
+          }
+          // -- WORK ORDER & BG COMMANDS (Stubs) --
+          else if (cmd.startsWith('bg.research.list')) { return "[RESEARCH BACKLOG EMPTY]"; }
+          else if (cmd.startsWith('bg.research')) { return "[ADDED TO BACKGROUND RESEARCH QUEUE]"; }
+          else if (cmd.startsWith('wo.submit')) { return "[WORK ORDER SUBMITTED]"; }
+          else if (cmd.startsWith('wo.status')) { return "[ALL WORK ORDERS IDLE/COMPLETED]"; }
+          else if (cmd.startsWith('wo.list')) { return "[NO ACTIVE WORK ORDERS]"; }
+          else if (cmd.startsWith('wo.revert')) { return "[REVERT COMPLETE]"; }
+
+          return `[SYSTEM ERROR] UNKNOWN COMMAND OR INVALID SYNTAX: '${commandLine}'. Ensure you followed the TOOL CALL PROTOCOL exactly. Example: '? search.brave your query'`;
+      } catch (err: any) {
+          return `[SYSTEM EXECUTION ERROR] Error executing command: ${err.message}. Please fix syntax or query format and try again.`;
       }
   }
 

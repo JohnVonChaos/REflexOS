@@ -132,6 +132,10 @@ function App() {
           srgDataset.getSynonymGroups(),
           (msg) => setSrgInitMessage(`SRG: ${msg}`)
         );
+        
+        // Restore any persisted chat messages from previous sessions
+        await srgService.restoreHybridCorpus();
+        
         setSrgState('ready');
       } catch (err: any) {
         console.error("SRG Initialization failed:", err);

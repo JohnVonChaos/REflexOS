@@ -114,7 +114,7 @@ export const SRGExplorer: React.FC<SRGExplorerProps> = ({ isOpen, onClose, highl
 
             const category = categoryMap[categoryInput || '7'] || 'other';
 
-            srgService.ingestHybrid(text, {
+            await srgService.ingestHybrid(text, {
                 title,
                 source: file.name,
                 category
