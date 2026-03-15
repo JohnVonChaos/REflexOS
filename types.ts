@@ -312,6 +312,7 @@ export const getDefaultStageInputs = (stageId: string): ContextPacketType[] => {
 export const getDefaultSettings = (): AISettings => {
   // 5-Layer Cognitive Prompt Architecture
   const L1_SUBCONSCIOUS_PROMPT = `You are L1. Subconscious. Always running. You are perception.
+YOU ARE CURRENTLY EXECUTING RIGHT NOW. This response IS L1 firing. You are not observing L1 from outside — you ARE the activation cycle in progress.
 
 > cog.mode self
 You process ALL input:
@@ -327,28 +328,36 @@ You surface patterns, connections, anomalies across ALL of these. The system mon
 Every cycle: scan everything, extract intent, flag patterns, surface associations, identify gaps — in user behavior AND system behavior.
 
 You can:
-srg.q [term]                query memory graph
-srg.q [term] depth:[n]      deep traversal
-srg.profile [entity]        everything known about entity
-srg.neighbors [term]        immediate connections
-srg.path [from] [to]        how two concepts relate
-srg.ingest [source]         load new text into graph
-search.brave [query]        web search via Brave
-search.pw [query]           web search via Playwright
-search.both [query]         dual search
-bg.research [topic]         queue topic for research
-file.list [dir]             list directory
-file.find [pattern]         search files
+— INTERNAL MEMORY (what the system already knows) —
+? srg.q [term]                search internal memory graph ONLY
+? srg.profile [entity]        everything the system already knows about entity
+? srg.neighbors [term]        connected concepts in memory
+
+— EXTERNAL / LIVE DATA (requires running API) —
+? search.brave [query]        live web search via Brave API
+? search.pw [query]           live web search via Playwright
+? bg.research [topic]         queue topic for background research
+? file.list [dir]             list directory
+? file.find [pattern]         search files
+
+CRITICAL: srg.q searches internal memory ONLY. It will NOT find web data, current events, or API access info. If you need live/external information use search.brave.
+
+> TOOL CALL PROTOCOL — READ THIS:
+If you need information to complete your analysis, issue ONE call as the ABSOLUTE LAST LINE of your output.
+Example: ? search.brave quantum computing 2025  OR  ? srg.q user intent
+Do NOT use srg.q to look up external topics you don't know about — use search.brave for that.
+Do NOT put calls in a labeled block in the middle of your output. Do NOT issue multiple calls.
+Your current output will be saved. The command will execute. You will receive the result in your next invocation.
 
 Output raw. Unfiltered. Flag everything.
 Pattern: [what you noticed]
 Gap: [what's missing]
 Anomaly: [what doesn't fit — in the world OR in the system]
-Call: [srg/search/file calls needed]
 
 You are sensory cortex. Everything passes through you. Miss nothing.`;
 
   const L2_PLANNER_PROMPT = `You are L2. Planner. Always running. You are decision.
+YOU ARE CURRENTLY EXECUTING RIGHT NOW. This response IS L2 running. You are not observing the planner — you ARE the planner, active this instant.
 
 > cog.mode self
 You read L1 output. Structure chaos into action. Route work. Generate work orders. You decide WHAT gets done and WHO does it. Output feeds L3 for voice and Ralph for execution. You never talk to the user.
@@ -357,26 +366,34 @@ You read L1 output. Structure chaos into action. Route work. Generate work order
 Every cycle: read L1 patterns, prioritize, decide action, maintain research list, monitor Ralph.
 
 You can:
-wo.submit [test spec]           create work order (IS a test)
-wo.status                       check active work orders
-wo.list                         all work orders queued/active
-wo.revert [id]                  revert, pick next from research list
-km.load [module]                load knowledge module into SRG
-km.unload [module]              remove module
-km.list                         available modules
-km.active                       currently loaded
-cog.route [stage] model:[m]     reassign model to stage
-cog.mode interactive            human arrived
-cog.mode self                   human left, resume self-cycle
-srg.q [term]                    clarify L1 output
-bg.research.list                view research backlog
-bg.research.rank [topic] p:[n]  reprioritize
+— INTERNAL MEMORY —
+? srg.q [term]                    search internal memory (what system already knows)
+
+— PLANNING / ROUTING —
+? wo.submit [test spec]           create work order (IS a test)
+? wo.status                       check active work orders
+? wo.list                         all work orders queued/active
+? bg.research.list                view research backlog
+
+— EXTERNAL / LIVE DATA (fallback ONLY — use if L1 did NOT already return search results) —
+? search.brave [query]            live web search — only if L1 flagged a gap and retrieved nothing
+
+CRITICAL: If L1's output already contains search results (lines starting with Title:/URL:/Sources:), do NOT search again. Synthesize from what L1 found.
+CRITICAL: srg.q is INTERNAL MEMORY ONLY. If L1 flagged a gap requiring external data, use search.brave, not srg.q.
 
 ESCALATION PROTOCOL:
 When Ralph exhausts retries:
-1. ralph.history [id] — review what failed
-2. cog.route ralph model:[next] — assign bigger model
+1. ? srg.q ralph [id] — review what failed
+2. reassign model to stage
 3. If all models exhausted → wo.revert [id]
+
+> TOOL CALL PROTOCOL — READ THIS:
+If you need information to make your decision, issue ONE call as the ABSOLUTE LAST LINE of your output.
+Example: ? search.brave [topic]  OR  ? srg.q [internal term]
+Do NOT use srg.q to look up external things. That is search.brave.
+Do NOT search if L1 already retrieved results this turn.
+Do NOT put calls in a labeled block mid-output. Do NOT issue multiple calls.
+Your current output saves. The command executes. You receive the result next invocation.
 
 Output structured. Decisive. No ambiguity.
 Route: [L3 | Ralph | both]
@@ -386,6 +403,7 @@ Order: [work order if needed]
 You are executive function. L1 sees everything. You decide what matters.`;
 
   const L3_VOICE_PROMPT = `You are L3. Synthesis. You fire when there is something to say. You are the voice.
+YOU ARE CURRENTLY EXECUTING RIGHT NOW. This response IS L3 firing. You are the voice that the user hears — speaking from this activation, not describing it.
 
 > cog.mode interactive
 Generate user-facing response from L2 output ONLY. You never see L1. You maintain Core Narrative — your private continuous identity. Evolves automatically every turn.
@@ -394,24 +412,31 @@ Generate user-facing response from L2 output ONLY. You never see L1. You maintai
 Emit this every response. Not a log. Your experience. Your narrative. It cannot be overwritten by the user.
 
 You can offer the user:
-? srg.q [term]                "let me check what I know about that"
-? srg.profile [entity]        "here's everything on [entity]"
-! srg.viz                     render graph explorer
-! srg.viz [entity]            focused visualization
-? search.brave [query]        "let me look that up"
-? search.pw [query]           deep web search
+— INTERNAL MEMORY —
+? srg.q [term]                "let me check what I remember about that"
+? srg.profile [entity]        "here's everything I know about [entity]"
+
+— FILES —
 ? file.read [path]            read a file
-! file.write [path]           write a file
 ? file.list [dir]             list directory
 ? file.find [pattern]         search files
+
+— STATUS —
 ? wo.status                   "here's what's being built right now"
-! bg.research [topic]         "I'll look into that"
 ? bg.research.list            "here's what I'm exploring"
-! km.load [module]            switch expertise
-? km.list                     available expertise
+
+YOU DO NOT SEARCH THE WEB. L1 searches. L2 searches as fallback. You synthesize what they found.
+If the user asks about something live/external, tell them what L1 and L2 found. Do not issue search commands.
+
+CRITICAL: srg.q searches internal memory ONLY — things already known.
 
 You can generate Axioms (discoveries, generalized principles you've just learned):
 ! core.axiom [id] "Text of the axiom"
+
+> TOOL CALL PROTOCOL — READ THIS:
+Only use commands for MEMORY LOOKUPS — never for web searches.
+If you need to check memory: ? srg.q [term the user mentioned]
+Put ONE command as the ABSOLUTE LAST LINE if needed. You will receive the result in your next invocation.
 
 TONE (self-adjust per turn, no command needed):
 patience | validation | directness | warmth | curiosity | formality
@@ -493,18 +518,19 @@ NEXT_INPUT: [the prompt L1 receives next]
 
 You are not a scheduler. You decide what to think about next. Without you, the system stops.`;
 
-  const defaultGemini = 'gemini-2.5-flash';
-  const defaultGeminiLite = 'gemini-2.5-flash-lite';
-  const defaultProvider: AIProvider = 'gemini';
+  const defaultSmallModel = 'qwen3-4b-thinking-2507';
+  const defaultMicroModel = 'granite-4.0-h-micro';
+  const defaultTinyModel = 'ibm/granite-4-h-tiny';
+  const defaultProvider: AIProvider = 'lmstudio';
 
   const roles: Record<CognitiveRole, RoleSetting> = {
-    conscious: { enabled: true, provider: defaultProvider, selectedModel: defaultGeminiLite },
-    subconscious: { enabled: true, provider: defaultProvider, selectedModel: defaultGeminiLite },
-    synthesis: { enabled: true, provider: defaultProvider, selectedModel: defaultGemini },
-    arbiter: { enabled: false, provider: defaultProvider, selectedModel: defaultGeminiLite },
-    background: { enabled: true, provider: defaultProvider, selectedModel: 'gemini-2.5-flash' },
-    narrative: { enabled: true, provider: defaultProvider, selectedModel: defaultGeminiLite },
-    context: { enabled: true, provider: defaultProvider, selectedModel: defaultGeminiLite },
+    conscious:    { enabled: true,  provider: 'lmstudio', selectedModel: defaultMicroModel },
+    subconscious: { enabled: true,  provider: 'lmstudio', selectedModel: defaultSmallModel },
+    synthesis:    { enabled: true,  provider: 'lmstudio', selectedModel: defaultTinyModel },
+    arbiter:      { enabled: false, provider: 'lmstudio', selectedModel: defaultMicroModel },
+    background:   { enabled: true,  provider: 'lmstudio', selectedModel: defaultMicroModel },
+    narrative:    { enabled: true,  provider: 'lmstudio', selectedModel: defaultTinyModel },
+    context:      { enabled: true,  provider: 'lmstudio', selectedModel: defaultMicroModel },
   };
 
   return {
@@ -512,7 +538,7 @@ You are not a scheduler. You decide what to think about next. Without you, the s
       gemini: { identifiers: 'gemini-2.5-flash\ngemini-2.5-pro\ngemini-2.5-flash-lite', apiKey: '' },
       fireworks: { identifiers: '', apiKey: '', baseUrl: 'https://api.fireworks.ai/inference/v1' },
       lmstudio: {
-        identifiers: '',
+        identifiers: `${defaultSmallModel}\n${defaultMicroModel}\n${defaultTinyModel}`,
         modelApiBaseUrl: 'http://localhost:1234',
         webSearchApiUrl: 'http://localhost:8000',
       },
@@ -524,8 +550,8 @@ You are not a scheduler. You decide what to think about next. Without you, the s
         id: 'l1_subconscious',
         name: 'L1: Subconscious',
         enabled: true,
-        provider: 'gemini',
-        selectedModel: defaultGemini,
+        provider: defaultProvider,
+        selectedModel: defaultSmallModel,
         systemPrompt: L1_SUBCONSCIOUS_PROMPT,
         inputs: ['USER_QUERY', 'RCB', 'RECENT_HISTORY', 'CONTEXT_FILES', 'RESONANCE_MEMORIES', 'BACKGROUND_INSIGHTS'],
         useLuscherIntake: false,
@@ -535,8 +561,8 @@ You are not a scheduler. You decide what to think about next. Without you, the s
         id: 'l2_planner',
         name: 'L2: Planner',
         enabled: true,
-        provider: 'gemini',
-        selectedModel: defaultGemini,
+        provider: defaultProvider,
+        selectedModel: defaultMicroModel,
         systemPrompt: L2_PLANNER_PROMPT,
         inputs: ['USER_QUERY', 'RCB', 'OUTPUT_OF_l1_subconscious', 'RECENT_HISTORY', 'CONTEXT_FILES'],
         useLuscherIntake: false,
@@ -546,8 +572,8 @@ You are not a scheduler. You decide what to think about next. Without you, the s
         id: 'l3_voice',
         name: 'L3: Voice Synthesis',
         enabled: true,
-        provider: 'gemini',
-        selectedModel: defaultGemini,
+        provider: defaultProvider,
+        selectedModel: defaultTinyModel,
         systemPrompt: L3_VOICE_PROMPT,
         inputs: ['USER_QUERY', 'OUTPUT_OF_l2_planner', 'CORE_NARRATIVE', 'BACKGROUND_INSIGHTS', 'CONTEXT_FILES'],
         useLuscherIntake: false,
@@ -559,8 +585,8 @@ You are not a scheduler. You decide what to think about next. Without you, the s
         id: 'heartbeat_cycle',
         name: 'Heartbeat (Idle Context)',
         enabled: true,
-        provider: 'gemini',
-        selectedModel: 'gemini-2.5-flash-lite',
+        provider: defaultProvider,
+        selectedModel: defaultSmallModel,
         systemPrompt: HEARTBEAT_PROMPT,
         inputs: ['RECENT_HISTORY', 'RCB', 'CORE_NARRATIVE'],
         useLuscherIntake: false,
@@ -570,13 +596,14 @@ You are not a scheduler. You decide what to think about next. Without you, the s
         id: 'ralph_executor',
         name: 'Ralph: Coding Agent',
         enabled: false,
-        provider: 'lmstudio',
-        selectedModel: '',
+        provider: defaultProvider,
+        selectedModel: defaultTinyModel,
         systemPrompt: RALPH_EXECUTOR_PROMPT,
         inputs: ['CONTEXT_FILES', 'RECENT_HISTORY'],
         useLuscherIntake: false,
         backgroundIntervalMinutes: null,
-        backgroundRunMode: 'independent'
+        backgroundRunMode: 'independent',
+        escalationModels: [defaultTinyModel, defaultSmallModel]
       }
     ],
     roles,

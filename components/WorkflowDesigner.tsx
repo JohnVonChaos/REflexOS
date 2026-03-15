@@ -556,7 +556,35 @@ internal revision protocol (see § 4).`,
                             </div>
                             <div className="space-y-2">
                                 <label className="font-semibold text-gray-400">LM Studio</label>
-                                <input type="text" placeholder="Model API Base URL" value={localSettings.providers.lmstudio.modelApiBaseUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'modelApiBaseUrl', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                <div className="flex gap-2">
+                                    <input type="text" placeholder="Model API Base URL" value={localSettings.providers.lmstudio.modelApiBaseUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'modelApiBaseUrl', e.target.value)} className="flex-1 bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                    <button
+                                        onClick={async () => {
+                                            let baseUrl = localSettings.providers.lmstudio.modelApiBaseUrl || 'http://localhost:1234';
+                                            baseUrl = baseUrl.replace(/\/v1\/?$/, '').replace(/\/chat\/completions\/?$/, '');
+                                            try {
+                                                const res = await fetch(`${baseUrl}/v1/models`);
+                                                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                                                const json = await res.json();
+                                                const models = json.data || json.models || [];
+                                                const ids = models.map((m: any) => m.id).filter(Boolean);
+                                                if (ids.length > 0) {
+                                                    handleProviderDetailChange('lmstudio', 'identifiers', ids.join('\n'));
+                                                    alert(`Successfully fetched ${ids.length} models from LM Studio.`);
+                                                } else {
+                                                    alert('Connected to LM Studio, but no models are currently loaded.');
+                                                }
+                                            } catch (err: any) {
+                                                console.error('Failed to fetch models from LM studio:', err);
+                                                alert(`Failed to connect to LM Studio at ${baseUrl}. Is the local server running?`);
+                                            }
+                                        }}
+                                        className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-xs font-semibold whitespace-nowrap"
+                                        title="Fetch models currently loaded in LM Studio"
+                                    >
+                                        Fetch Models
+                                    </button>
+                                </div>
                                 <input type="text" placeholder="Web Search API URL" value={localSettings.providers.lmstudio.webSearchApiUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'webSearchApiUrl', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
                                 <textarea value={localSettings.providers.lmstudio.identifiers} onChange={e => handleProviderDetailChange('lmstudio', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
                             </div>

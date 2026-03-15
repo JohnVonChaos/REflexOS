@@ -172,35 +172,42 @@ async function* openAIGenerateStream(model: string, contents: Content[], systemI
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const data = line.substring(6);
-                if (data === '[DONE]') {
-                    return;
-                }
-                try {
-                    const json = JSON.parse(data);
-                    if (json.choices && Array.isArray(json.choices) && json.choices.length > 0) {
-                        const chunkText = json.choices[0]?.delta?.content;
-                        if (typeof chunkText === 'string') {
-                            yield { text: chunkText } as GenerateContentResponse;
-                        }
-                    } else {
-                        loggingService.log('WARN', "OpenAI-compatible stream chunk has unexpected structure", { json });
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.substring(6);
+                    if (data === '[DONE]') {
+                        return;
                     }
-                } catch (e) {
-                    loggingService.log('ERROR', "Error parsing OpenAI-compatible stream chunk", { error: e, data });
+                    try {
+                        const json = JSON.parse(data);
+                        if (json.choices && Array.isArray(json.choices) && json.choices.length > 0) {
+                            const chunkText = json.choices[0]?.delta?.content;
+                            if (typeof chunkText === 'string') {
+                                yield { text: chunkText } as GenerateContentResponse;
+                            }
+                        } else {
+                            loggingService.log('WARN', "OpenAI-compatible stream chunk has unexpected structure", { json });
+                        }
+                    } catch (e) {
+                        loggingService.log('ERROR', "Error parsing OpenAI-compatible stream chunk", { error: e, data });
+                    }
                 }
             }
         }
+    } finally {
+        // Always release the HTTP connection — critical when the consumer breaks early
+        // (e.g. mid-stream command interception or layer skip). Without this, LM Studio
+        // sees simultaneous open connections to the same model when the next stage starts.
+        try { reader.cancel(); } catch (_) { /* ignore cancel errors */ }
     }
 }
 
@@ -330,6 +337,49 @@ export interface WebSearchResult {
 export const performWebSearch = async (query: string, roleSetting: RoleSetting, providers: AISettings['providers'], aiSettings?: AISettings): Promise<WebSearchResult | null> => {
     const provider = roleSetting.provider;
     loggingService.log('DEBUG', 'Performing web search', { query, provider });
+    
+    // PRIMARY: Try Brave Search API if key is configured
+    const braveApiKey = process.env.BRAVE_SEARCH_API_KEY;
+    if (braveApiKey) {
+        try {
+            loggingService.log('DEBUG', 'Attempting Brave Search API call', { query });
+            const response = await fetch('https://api.search.brave.com/res/v1/web/search', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Subscription-Token': braveApiKey,
+                    'Accept-Encoding': 'gzip'
+                },
+                body: JSON.stringify({ q: query, count: 5 })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                loggingService.log('WARN', `Brave Search API error: ${response.status}`, { error: errorText });
+            } else {
+                const result = await response.json() as any;
+                
+                if (result.web?.results && Array.isArray(result.web.results)) {
+                    const sources = result.web.results.map((r: any) => ({
+                        web: { uri: r.url, title: r.title }
+                    }));
+                    
+                    // Format the results as markdown
+                    const formattedText = result.web.results.map((r: any, idx: number) =>
+                        `**${idx + 1}. ${r.title}**\n${r.url}\n${r.description || ''}`
+                    ).join('\n\n');
+
+                    loggingService.log('INFO', 'Brave Search API successful', { query, resultCount: result.web.results.length });
+                    return { text: formattedText, sources };
+                }
+            }
+        } catch (e: any) {
+            loggingService.log('WARN', 'Brave Search API failed, falling back', { error: e.message });
+        }
+    } else {
+        loggingService.log('DEBUG', 'BRAVE_SEARCH_API_KEY not configured, skipping Brave API');
+    }
+    
     if (provider === 'gemini') {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({

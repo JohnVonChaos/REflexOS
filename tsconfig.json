@@ -25,5 +25,10 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "src-disabled",
+    "12.9.25-6.10pm",
+    "node_modules"
+  ]
 }

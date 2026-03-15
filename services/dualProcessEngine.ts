@@ -49,7 +49,7 @@ Be bold but grounded. Propose concrete actions or insights.
 
 Respond with your proposal:`;
 
-        const response = await generateText(prompt, roleSetting, providers);
+        const response = await generateText(prompt, '', roleSetting, providers);
 
         await scratchpadService.append('GENERATOR', response, actionType, 'LOW');
         this.generatorWins++;
@@ -94,7 +94,7 @@ Your role is to CRITIQUE, CONSOLIDATE, and STABILIZE. Review the Generator's pro
 
 Respond with your refined version:`;
 
-        const response = await generateText(prompt, roleSetting, providers);
+        const response = await generateText(prompt, '', roleSetting, providers);
 
         await scratchpadService.append('REFINER', response, actionType, 'HIGH');
         this.refinerWins++;

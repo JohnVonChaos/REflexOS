@@ -72,7 +72,7 @@ export class ResurfacingService {
     const allocation = CONTEXT_BUDGETS[turnType];
 
     // 1. Build normal context
-    const pool = allItems.filter(item => allocation.tiers.includes(contextService.assignTier(item, currentTurn)));
+    const pool = allItems.filter(item => (allocation.tiers as readonly string[]).includes(contextService.assignTier(item, currentTurn)));
 
     // Compute async restoration priority using SRG similarity to current context (we'll use empty context by default)
     const computePriorities = async (items: MemoryAtom[], currentContext: string) => {

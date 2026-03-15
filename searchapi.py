@@ -37,10 +37,25 @@ BRAVE_API_KEY = "BSAf9Suu35VdwpSVFlXcE4rf-KKbxuV"
 
 def extract_search_phrase(raw_query):
     """Extracts the core search intent from the raw input."""
+    # Priority 1: Look for explicit SEARCH QUERY: label
     match = re.search(r'SEARCH QUERY:\s*([^\n]+)', raw_query, re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    lines = [l.strip() for l in raw_query.splitlines() if l.strip()]
+    
+    # Priority 2: Look for ? search.brave command (explicit search command)
+    match = re.search(r'\?\s*search\.brave\s+(.+?)(?:\n|$|```)', raw_query, re.IGNORECASE | re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    
+    # Priority 3: Look for search.brave without the ? prefix
+    match = re.search(r'search\.brave\s+(.+?)(?:\n|$|```)', raw_query, re.IGNORECASE | re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    
+    # Fallback: Get the last non-empty, non-formatting line
+    # Remove code blocks and formatting noise
+    cleaned = re.sub(r'```.*?```', '', raw_query, flags=re.DOTALL)
+    lines = [l.strip() for l in cleaned.splitlines() if l.strip() and not l.strip().startswith('#') and not l.strip().startswith('*')]
     return lines[-1] if lines else ""
 
 
@@ -106,16 +121,21 @@ def brave_search(query: str, num_results: int = 10):
     }
     
     try:
+        logger.info(f"Making HTTP GET to {url} with query: {query}")
         resp = requests.get(url, headers=headers, params=params, timeout=15)
+        logger.info(f"Brave API response status: {resp.status_code}")
         resp.raise_for_status()
         data = resp.json()
+        logger.info(f"Brave API returned JSON with keys: {list(data.keys())}")
         
         # Brave returns results in 'web' -> 'results'
         web_results = data.get('web', {}).get('results', [])
+        logger.info(f"Extracted {len(web_results)} web results from Brave response")
         return normalize_brave_results(web_results)
         
     except Exception as e:
-        logger.error(f"Brave Search API error: {e}")
+        logger.error(f"Brave Search API error: {type(e).__name__}: {e}")
+        logger.error(f"API Key used: {BRAVE_API_KEY[:10]}... (first 10 chars)")
         return []
 
 

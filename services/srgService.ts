@@ -470,8 +470,18 @@ class SRGService {
       estimatedBytes: hybridStats.corpusSize * 5, // Rough estimate: avg 5 bytes per token
       nodes: hybridStats.nodes,
       edges: hybridStats.edges,
-      synsetGroups: hybridStats.synsetGroups
+      synsetGroups: hybridStats.synsetGroups,
+      uniqueWords: hybridStats.nodes
     };
+  }
+
+  /**
+   * Get a manifest of the loaded corpus for planner awareness.
+   */
+  public getCorpusManifest(): string {
+    const stats = this.getCorpusStats();
+    if (stats.totalTokens === 0) return '';
+    return `[CORPUS MANIFEST] ${stats.totalTokens} tokens indexed, ${stats.uniqueWords} unique words, ${stats.edges} relations, ${stats.synsetGroups} synset groups.`;
   }
 
   /**

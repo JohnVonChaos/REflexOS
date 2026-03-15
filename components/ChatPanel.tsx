@@ -101,11 +101,10 @@ const ContextManager: React.FC<{
                     let srgScore = 0;
                     try {
                         const hybridResult = srgService.queryHybrid(query, {
-                            contextText: text.substring(0, 500),
-                            maxResults: 3,
+                            maxDepth: 2,
                         });
-                        if (hybridResult && hybridResult.matchedEntities && hybridResult.matchedEntities.length > 0) {
-                            srgScore = Math.min(hybridResult.matchedEntities.length * 0.3, 1);
+                        if (hybridResult && hybridResult.trace && hybridResult.trace.length > 0) {
+                            srgScore = Math.min(hybridResult.trace.length * 0.3, 1);
                         }
                     } catch (e) {
                         // SRG not ready, just use keyword
@@ -562,6 +561,8 @@ interface ChatPanelProps {
     onCreateWorkspace: (name: string, itemIds: string[], fileIds?: string[], description?: string) => Promise<void>;
     onGetWorkspaces: () => Promise<any[]>;
     onLoadWorkspace: (id: string) => Promise<void>;
+    onCreateWorkspaceWithState?: (name: string, description?: string, workflow?: boolean, settings?: boolean, preferences?: boolean) => Promise<string>;
+    onLoadWorkspaceWithOptions?: (id: string, options: any, modes: any) => Promise<void>;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -698,6 +699,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         allFiles={projectFiles}
                         onViewTrace={onViewTrace}
                         debugMode={aiSettings.debugSRG}
+                        onInterruptLayer={onInterruptLayer}
                     />
                 ))}
                 <div ref={messagesEndRef} />
@@ -736,12 +738,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     {queuedMessage && <div className="absolute bottom-12 left-3 right-3 text-xs text-yellow-400 bg-yellow-900/30 rounded px-2 py-1">Queued: "{queuedMessage}"</div>}
                     <div className="absolute right-3 bottom-2 flex items-center gap-2">
                         {isLoading ? (
-                            <button
-                                onClick={onStopGeneration}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors text-sm"
-                            >
-                                <StopIcon /> Stop
-                            </button>
+                            <>
+                                <button
+                                    onClick={onInterruptLayer}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-500 text-black rounded-md hover:bg-yellow-400 transition-colors text-sm font-semibold"
+                                    title="Skip this layer and pass its partial output to the next stage"
+                                >
+                                    ⏭ Skip
+                                </button>
+                                <button
+                                    onClick={onStopGeneration}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors text-sm"
+                                >
+                                    <StopIcon /> Stop
+                                </button>
+                            </>
                         ) : (
                             <>
                                 {isSupported && (
@@ -801,7 +812,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 onToggleFileContext={onToggleFileContext}
                 onClearAllContexts={onClearAllContexts}
                 onClearTrapDoorStates={onClearAllTrapDoorStates}
-                onFetchAllContextItems={onFetchAllContextItems}
+                onFetchAllItems={onFetchAllContextItems}
                 onDeleteContextItem={onDeleteContextItem}
                 onCreateWorkspace={onCreateWorkspace}
                 onGetWorkspaces={onGetWorkspaces}

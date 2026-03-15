@@ -88,10 +88,19 @@ class BackgroundCognitionService {
       const systemInstructionWithManifest = BACKGROUND_COGNITION_PROMPT.replace('{CURRENT_DATETIME}', new Date().toISOString()) + '\n\n' + corpusManifest;
 
       const queryResponse = await generateText(contextString, systemInstructionWithManifest, roleSetting, providers);
+      
+      loggingService.log('DEBUG', 'Background cognition raw response:', { 
+        response: queryResponse.slice(0, 500),
+        length: queryResponse.length
+      });
 
       let query = this.extractQuery(queryResponse);
       if (!query) {
-        loggingService.log('ERROR', 'Background cognition: Failed to generate query.');
+        loggingService.log('ERROR', 'Background cognition: Failed to generate query.', { 
+          rawResponse: queryResponse.slice(0, 300),
+          extractedQuery: query,
+          contextLength: contextString.length
+        });
         return null;
       }
 
@@ -137,7 +146,7 @@ class BackgroundCognitionService {
       if (shouldSearchWeb) {
         loggingService.log('INFO', '[BACKGROUND CONSCIOUS] SRG insufficient - performing web search...');
 
-        const searchResult = await performWebSearch(query, roleSetting, providers, { playwrightSearchUrl: 'http://localhost:3005' } as any);
+        const searchResult = await performWebSearch(query, roleSetting, providers);
 
         if (searchResult && searchResult.text) {
           loggingService.log('INFO', `[BACKGROUND CONSCIOUS] Web search returned ${searchResult.text.length} chars - distilling...`);
@@ -303,19 +312,43 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
 
   private extractQuery(queryResponse: string): string | null {
     try {
+      // First try to extract JSON from markdown code block
       const jsonString = queryResponse.match(/```json\n([\s\S]*?)\n```/)?.[1];
       if (jsonString) {
         const parsed = JSON.parse(jsonString);
         if (typeof parsed.query === 'string') {
-          return parsed.query.trim();
+          const query = parsed.query.trim();
+          // Return null for explicitly empty queries, not empty string
+          return query === '' ? null : query;
+        }
+      }
+      
+      // Try to find JSON without markdown wrapper
+      const directJsonMatch = queryResponse.match(/\{[\s\S]*"query"[\s\S]*\}/);
+      if (directJsonMatch) {
+        const parsed = JSON.parse(directJsonMatch[0]);
+        if (typeof parsed.query === 'string') {
+          const query = parsed.query.trim();
+          return query === '' ? null : query;
         }
       }
     } catch (e) {
-      loggingService.log('WARN', 'Failed to parse JSON from background cognition. Falling back to raw text.', { error: e });
-      if (!queryResponse.includes('{')) {
-        return queryResponse.trim().replace(/"/g, '');
-      }
+      loggingService.log('WARN', 'Failed to parse JSON from background cognition. Falling back to raw text.', { 
+        error: e.message, 
+        response: queryResponse.slice(0, 200) 
+      });
     }
+    
+    // Fallback: if response doesn't look like JSON, treat as plain text query
+    const cleanResponse = queryResponse.trim().replace(/^["'`]|["'`]$/g, '');
+    if (cleanResponse && 
+        !cleanResponse.includes('{') && 
+        !cleanResponse.toLowerCase().includes('no search') &&
+        !cleanResponse.toLowerCase().includes('skip') &&
+        cleanResponse.length > 5) {
+      return cleanResponse;
+    }
+    
     return null;
   }
 
@@ -530,7 +563,11 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
                return files.length ? `Found in:\n${files.join('\n')}` : "No matches found.";
           }
           else if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
-               const query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
+               let query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
+               // Strip surrounding quotes
+               if ((query.startsWith('"') && query.endsWith('"')) || (query.startsWith("'") && query.endsWith("'"))) {
+                   query = query.slice(1, -1);
+               }
                const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
                const results = await performWebSearch(query, fakeRole, providers);
                return results ? `${results.text}\nSources: ${results.sources?.map((s: any) => s.web?.uri).filter(Boolean).join(', ')}` : "No results found.";
@@ -586,13 +623,14 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
           }
           
           const lines = streamedText.trim().split('\n');
-          const lastLine = lines[lines.length - 1]?.trim();
+          const cmdIndex = lines.findIndex(l => l.trim().startsWith('? '));
           
-          if (lastLine?.startsWith('? ')) {
-              const result = await this.executeAskCommand(lastLine, context, providers);
-              contents.push({ role: 'model', parts: [{ text: streamedText }] });
+          if (cmdIndex !== -1) {
+              const commandLine = lines[cmdIndex].trim();
+              const result = await this.executeAskCommand(commandLine, context, providers);
+              contents.push({ role: 'model', parts: [{ text: lines.slice(0, cmdIndex + 1).join('\n') }] });
               contents.push({ role: 'user', parts: [{ text: `> ${result}` }] });
-              finalProposalOutput += streamedText + `\n> ${result}\n\n`;
+              finalProposalOutput += lines.slice(0, cmdIndex + 1).join('\n') + `\n> ${result}\n\n`;
           } else {
               finalProposalOutput += streamedText;
               isStageComplete = true;

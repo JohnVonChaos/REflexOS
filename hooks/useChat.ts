@@ -58,48 +58,6 @@ const uuidv4 = () => {
   });
 }
 
-const executeAskCommand = async (commandLine: string, projectFiles: ProjectFile[], aiSettings: AISettings): Promise<string> => {
-    try {
-        const cmd = commandLine.trim().substring(2).trim(); // Remove "? "
-        if (cmd.startsWith('file.read')) {
-            const path = cmd.replace('file.read', '').trim();
-            const file = projectFiles.find(f => f.name === path);
-            if (file) return `File ${path}:\n\`\`\`\n${file.content}\n\`\`\``;
-            return `File not found: ${path}`;
-        }
-        else if (cmd.startsWith('file.list')) {
-            const dir = cmd.replace('file.list', '').trim();
-            const files = projectFiles.filter(f => f.name.startsWith(dir) || dir === '').map(f => f.name);
-            return files.length ? files.join('\n') : "No files found.";
-        }
-        else if (cmd.startsWith('file.find')) {
-            const pattern = cmd.replace('file.find', '').trim();
-            const regex = new RegExp(pattern, 'i');
-            const files = projectFiles.filter(f => regex.test(f.name) || regex.test(f.content || '')).map(f => f.name);
-             return files.length ? `Found in:\n${files.join('\n')}` : "No matches found.";
-        }
-        else if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
-             const query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
-             const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
-             const results = await performWebSearch(query, fakeRole, aiSettings.providers, aiSettings);
-             return results ? `${results.text}\nSources: ${results.sources?.map(s => s.web?.uri).filter(Boolean).join(', ')}` : "No results found.";
-        }
-        else if (cmd.startsWith('srg.q')) {
-             const query = cmd.replace('srg.q', '').trim();
-             const result = srgService.queryHybrid(query);
-             if (!result) return "No SRG results found.";
-             return `SRG Results for "${query}":\n${result.generated || ''}\nTrace: ${result.trace?.map(t => t.word).join(', ') || ''}`;
-        }
-        else if (cmd.startsWith('wo.status')) {
-             return "No active work orders."; // Stub for frontend
-        }
-        
-        return "Command not recognized or supported.";
-    } catch (err) {
-        return `Error executing command: ${err}`;
-    }
-};
-
 export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) => {
     const [messages, setMessages] = useState<MemoryAtom[]>([]);
     const [projectFiles, setProjectFiles] = useState<ProjectFile[]>(initialProjectFiles);
@@ -112,7 +70,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     const [loadingStage, setLoadingStage] = useState('');
     const [error, setError] = useState<Error | null>(null);
     const stopGenerationRef = useRef(false);
-    const interruptLayerRef = useRef(false);
+    const skipLayerRef = useRef(false);
     const [isCognitionRunning, setIsCognitionRunning] = useState(false);
 
     const currentTurnRef = useRef(0);
@@ -458,9 +416,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 }
 
                 if (searchQuery) {
+                    // Strip surrounding quotes that models sometimes add to queries to prevent exact-match zero results
+                    if ((searchQuery.startsWith('"') && searchQuery.endsWith('"')) || (searchQuery.startsWith("'") && searchQuery.endsWith("'"))) {
+                        searchQuery = searchQuery.slice(1, -1);
+                    }
                     loggingService.log('INFO', `${stage.name} generated search query: "${searchQuery}"`);
                     
-                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers);
+                    const searchResult = await performWebSearch(searchQuery, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
                     
                     if (searchResult && searchResult.text) {
                         const newAtom: MemoryAtom = {
@@ -797,7 +759,6 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         let newAxiomAtoms: MemoryAtom[] = [];
         let newAxiomsForNarrative: string[] = [];
         
-        // SUPPORT LEGACY JSON PARSING FROM AXIOM STAGE
         const axiomGenerationOutput = workflowOutputs['axiom_generation_default'];
         if (axiomGenerationOutput) {
             try {
@@ -809,41 +770,29 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             if (axiomData.text && axiomData.id) {
                                 newAxiomsForNarrative.push(axiomData.text);
                                 newAxiomAtoms.push({
-                                    uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'axiom',
-                                    text: axiomData.text, axiomId: axiomData.id, isInContext: false,
-                                    isCollapsed: false, activationScore: 1.0, lastActivatedAt: Date.now(),
-                                    lastActivatedTurn: currentTurnRef.current, orbitalDecayTurns: undefined,
+                                    uuid: uuidv4(),
+                                    timestamp: Date.now(),
+                                    role: 'model',
+                                    type: 'axiom',
+                                    text: axiomData.text,
+                                    axiomId: axiomData.id,
+                                    isInContext: false,
+                                    isCollapsed: false,
+                                    activationScore: 1.0,
+                                    lastActivatedAt: Date.now(),
+                                    lastActivatedTurn: currentTurnRef.current,
+                                    orbitalDecayTurns: undefined,
                                 });
                             }
                         }
                     }
                 }
-            } catch(e) { /* ignore legacy errors */ }
-        }
-
-        // NEW: PARSE DOT NOTATION AXIOMS FROM ALL STAGES
-        // Format: ! core.axiom [id] "The text" OR ! core.axiom "The text"
-        const dotNotationAxiomRegex = /!\s*core\.axiom\s+(?:\[(.*?)\]\s+)?(?:"([^"]+)"|'([^']+)'|\[([^\]]+)\])/g;
-        Object.entries(workflowOutputs).forEach(([stageId, output]) => {
-            if (!output || typeof output !== 'string') return;
-            let match;
-            while ((match = dotNotationAxiomRegex.exec(output)) !== null) {
-                const id = match[1] || 'emergent.axiom';
-                const text = match[2] || match[3] || match[4];
-                if (text && text.trim().length > 0) {
-                    newAxiomsForNarrative.push(text.trim());
-                    newAxiomAtoms.push({
-                        uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'axiom',
-                        text: text.trim(), axiomId: id, isInContext: false,
-                        isCollapsed: false, activationScore: 1.0, lastActivatedAt: Date.now(),
-                        lastActivatedTurn: currentTurnRef.current, orbitalDecayTurns: undefined,
-                    });
+                if (newAxiomAtoms.length > 0) {
+                     loggingService.log('INFO', 'Parsed emergent axioms from Axiom Generation stage.', { axioms: newAxiomAtoms });
                 }
+            } catch(e) {
+                loggingService.log('ERROR', 'Failed to parse axioms from Axiom Generation stage output', { error: e, output: axiomGenerationOutput });
             }
-        });
-
-        if (newAxiomAtoms.length > 0) {
-            loggingService.log('INFO', 'Parsed emergent axioms.', { count: newAxiomAtoms.length, axioms: newAxiomAtoms });
         }
         
         const projectedMessagesWithNewAxioms = [...messagesWithLearnedFlag, ...newAxiomAtoms];
@@ -1086,7 +1035,10 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
             // --- Dynamic Workflow Execution ---
             const workflow = aiSettingsRef.current.workflow;
-            const synthesisStageIndex = workflow.findIndex(s => s.id === 'synthesis_default');
+            // Find the synthesis / voice stage: prefer 'synthesis_default' for legacy, otherwise use the last enabled stage
+            const synthesisStageIndex = workflow.findIndex(s => s.id === 'synthesis_default') !== -1
+                ? workflow.findIndex(s => s.id === 'synthesis_default')
+                : (() => { for (let i = workflow.length - 1; i >= 0; i--) { if (workflow[i].enabled) return i; } return -1; })();
 
             // FIX: Check for context overflow before workflow execution
             const contextCheckPrompt = Object.values(baseContextPackets).join('\n');
@@ -1137,12 +1089,16 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 }
             }
 
+            // Create the model atom up front — intermediate stages stream into cognitiveTrace boxes,
+            // only the final/synthesis stage streams into the main message text.
             finalModelAtom = {
                 uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'model_response',
-                text: '...', isInContext: true, isCollapsed: false, cognitiveTrace: [...cognitiveTrace],
+                text: '', isInContext: true, isCollapsed: false, cognitiveTrace: [],
                 activationScore: 1.0, lastActivatedTurn: currentTurnRef.current, lastActivatedAt: Date.now(),
             };
             setMessages(prev => [...prev.filter(m => m.uuid !== userAtom.uuid), userAtom, finalModelAtom!]);
+
+            let lastCompletedStageId = '';
 
             for (let i = 0; i < workflow.length; i++) {
                 const stage = workflow[i];
@@ -1151,7 +1107,6 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                 setLoadingStage(stage.name + '...');
                 loggingService.log('INFO', `Executing workflow stage: ${stage.name}`);
-                interruptLayerRef.current = false; // reset on each stage starts
 
                 let stagePrompt = '';
                 for (const input of stage.inputs) {
@@ -1164,116 +1119,322 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     }
                 }
                 
-                let isStageComplete = false;
-                let contents: Content[] = [{ role: 'user', parts: [{ text: stagePrompt }] }];
-                let finalStageOutput = '';
+                const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
+                const isLastStage = i === synthesisStageIndex;
                 
-                // Set up trace item early for intermediate stages
-                let traceItem: MemoryAtom | null = null;
-                if (stage.id !== 'synthesis_default' && stage.id !== 'axiom_generation_default') {
-                    traceItem = {
-                        uuid: uuidv4(), timestamp: Date.now(), role: 'model', type: 'conscious_thought',
-                        text: '...', isInContext: false, isCollapsed: false, activationScore: 0,
+                // Reset skip flag for this layer
+                skipLayerRef.current = false;
+                
+                // For intermediate stages, create a live trace atom in the cognitiveTrace array
+                // so it renders as a collapsible box in CognitiveTraceViewer
+                let traceAtomUuid: string | null = null;
+                if (!isLastStage && stage.id !== 'axiom_generation_default') {
+                    traceAtomUuid = uuidv4();
+                    const liveTraceAtom = {
+                        uuid: traceAtomUuid, timestamp: Date.now(), role: 'model' as const,
+                        type: 'conscious_thought' as const, text: '', isInContext: false,
+                        isCollapsed: false, isGenerating: true, activationScore: 0,
                         lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name,
-                        isGenerating: true
                     } as any;
-                    finalModelAtom.cognitiveTrace = [...(finalModelAtom.cognitiveTrace || []), traceItem];
-                    setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...finalModelAtom! } : m));
+                    cognitiveTrace.push(liveTraceAtom);
+                    // Push the live trace into the message's cognitiveTrace so it shows immediately
+                    setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                        ? { ...m, cognitiveTrace: [...cognitiveTrace] } 
+                        : m));
                 }
 
-                while (!isStageComplete && !stopGenerationRef.current && !interruptLayerRef.current) {
-                    const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
-                    
-                    // If it's the main synthesis stage, stream the response
-                    if (stage.id === 'synthesis_default') {
-                        const stream = await sendMessageToGemini(contents, stage.systemPrompt, true, roleSetting, aiSettingsRef.current.providers);
-                        loggingService.log('DEBUG', 'Final synthesis stream started.');
-                        
-                        let streamedText = '';
+                const contents: Content[] = [{ role: 'user', parts: [{ text: stagePrompt }] }];
+                const stream = await sendMessageToGemini(contents, stage.systemPrompt, true, roleSetting, aiSettingsRef.current.providers);
+                loggingService.log('DEBUG', `Streaming stage: ${stage.name}`);
+                
+                let streamedText = '';
 
-                        for await (const chunk of stream) {
-                            if (stopGenerationRef.current || interruptLayerRef.current) break;
+                // === MID-STREAM COMMAND EXECUTION ===
+                const checkAndExecuteCommand = async (text: string, isStreamEnd: boolean = false): Promise<{ shouldContinue: boolean; result?: string; newText?: string }> => {
+                    const lines = text.split('\n');
+                    const cmdIndex = lines.findIndex(l => l.trim().startsWith('?'));
+                    
+                    if (cmdIndex === -1) return { shouldContinue: false };
+                    
+                    const isLastLine = cmdIndex === lines.length - 1;
+                    if (isLastLine && !isStreamEnd) {
+                        // Wait for the command to finish streaming (either a newline or stream ends)
+                        return { shouldContinue: false };
+                    }
+                    
+                    const commandLine = lines[cmdIndex].trim();
+                    if (commandLine === '?') {
+                        // Ignore just '?' by itself until it has more text, or return unknown if stream ended
+                        if (!isStreamEnd) return { shouldContinue: false };
+                    }
+                    
+                    loggingService.log('INFO', `[${stage.name}] Detected command: ${commandLine}`);
+                    
+                    // Remove the command line from streamedText so it doesn't appear in output
+                    const textBeforeCommand = lines.slice(0, cmdIndex).join('\n');
+                    
+                    // Execute the command
+                    try {
+                        let commandResult = '';
+                        const cmd = commandLine.substring(1).trim(); // Remove "? "
+                            
+                            // Handle different command types
+                            if (cmd.startsWith('search.brave') || cmd.startsWith('search.pw') || cmd.startsWith('search.both')) {
+                                let query = cmd.replace(/search\.(brave|pw|both)/, '').trim();
+                                // Strip surrounding quotes that models sometimes add to queries to prevent exact-match zero results
+                                if ((query.startsWith('"') && query.endsWith('"')) || (query.startsWith("'") && query.endsWith("'"))) {
+                                    query = query.slice(1, -1);
+                                }
+                                loggingService.log('INFO', `[${stage.name}] Executing web search: "${query}"`);
+                                const searchResult = await performWebSearch(query, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
+                                commandResult = searchResult ? `[WEB SEARCH RESULTS]\n${searchResult.text}\n\n[SOURCES]\n${searchResult.sources?.map((s: any) => s.web?.uri || s.url).filter(Boolean).join('\n') || 'None'}` : "[NO SEARCH RESULTS]";
+                            }
+                            else if (cmd.startsWith('srg.q')) {
+                                const query = cmd.replace('srg.q', '').trim();
+                                loggingService.log('INFO', `[${stage.name}] Querying SRG: "${query}"`);
+                                const result = srgService.queryHybrid(query);
+                                commandResult = result ? `[SRG RESULTS]\n${result.generated || ''}\n\n[TRACE]\n${result.trace?.map((t: any) => t.word).join(', ') || ''}` : "[NO SRG RESULTS]";
+                            }
+                            else if (cmd.startsWith('file.read')) {
+                                const path = cmd.replace('file.read', '').trim();
+                                loggingService.log('INFO', `[${stage.name}] Reading file: ${path}`);
+                                // This would require access to projectFiles from context
+                                commandResult = `[FILE READ NOT YET IMPLEMENTED: ${path}]`;
+                            }
+                            else {
+                                commandResult = `[UNKNOWN COMMAND: ${commandLine}]`;
+                            }
+                            
+                            loggingService.log('INFO', `[${stage.name}] Command result: ${commandResult.length} chars`);
+                            
+                            // Return the text before command + the command result
+                            // This will be re-fed to the model as new context
+                            return {
+                                shouldContinue: true,
+                                result: textBeforeCommand + '\n\n' + commandResult + '\n\nContinue your response:',
+                                newText: textBeforeCommand + '\n\n> Executing: ' + commandLine + '...'
+                            };
+                        } catch (err: any) {
+                            loggingService.log('ERROR', `[${stage.name}] Command execution failed`, { error: err.message });
+                            return {
+                                shouldContinue: true,
+                                result: textBeforeCommand + '\n\n[ERROR EXECUTING COMMAND: ' + err.message + ']\n\nContinue your response:',
+                                newText: textBeforeCommand + '\n\n> Error: ' + err.message
+                            };
+                        }
+                    
+                    // Add fallback just in case
+                    return { shouldContinue: false };
+                };
+
+                let streamBrokenByCommand = false;
+                let pendingCommandResult = '';
+
+                for await (const chunk of stream) {
+                    // Stop = kill everything; Skip = break just this stream
+                    if (stopGenerationRef.current || skipLayerRef.current) break;
+                    if (chunk.text) {
+                        streamedText += chunk.text;
+                        
+                        // Check for mid-stream commands
+                        const cmdCheck = await checkAndExecuteCommand(streamedText, false);
+                        if (cmdCheck.shouldContinue && cmdCheck.result) {
+                            // Break out of streaming to re-feed model with command result
+                            loggingService.log('INFO', `[${stage.name}] Breaking stream to re-feed model with command results`);
+                            streamBrokenByCommand = true;
+                            pendingCommandResult = cmdCheck.result;
+                            // Update the UI one last time with the text BEFORE the command to hide the command itself
+                            const cleanedText = cmdCheck.newText ?? streamedText;
+                            if (isLastStage) {
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, text: cleanedText + '...' } 
+                                    : m));
+                            } else if (traceAtomUuid) {
+                                const updatedTrace = cognitiveTrace.map(t => 
+                                    t.uuid === traceAtomUuid ? { ...t, text: cleanedText } : t
+                                );
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                    : m));
+                            }
+                            break;
+                        }
+                    }
+                    if (chunk.functionCalls) {
+                        functionCalls.push(...chunk.functionCalls);
+                    }
+                    
+                    if (!streamBrokenByCommand) {
+                        if (isLastStage) {
+                            // Final stage: stream into the main message text
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                ? { ...m, text: streamedText + '...' } 
+                                : m));
+                        } else if (traceAtomUuid) {
+                            // Intermediate stage: stream into the cognitiveTrace box
+                            const updatedTrace = cognitiveTrace.map(t => 
+                                t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
+                            );
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                : m));
+                        }
+                    }
+                }
+                
+                // === HANDLE COMMAND RESULTS ===
+                // If a command was detected and executed, re-feed the model
+                const finalCheck = streamBrokenByCommand ? { shouldContinue: true, result: pendingCommandResult } : await checkAndExecuteCommand(streamedText, true);
+                if (finalCheck.shouldContinue && finalCheck.result) {
+                    loggingService.log('INFO', `[${stage.name}] Command detected at end of stream. Re-feeding model with results and continuing...`);
+                    
+                    // Add the command result to stagePrompt for next iteration
+                    stagePrompt = finalCheck.result;
+                    
+                    // Clear streamedText and get a fresh stream from the model with the injected context
+                    streamedText = '';
+                    const continueStream = await sendMessageToGemini(
+                        [{ role: 'user', parts: [{ text: stagePrompt }] }],
+                        stage.systemPrompt,
+                        true,
+                        roleSetting,
+                        aiSettingsRef.current.providers
+                    );
+                    
+                    loggingService.log('DEBUG', `Continuing stream for stage: ${stage.name}`);
+                    
+                    for await (const chunk of continueStream) {
+                        if (stopGenerationRef.current || skipLayerRef.current) break;
+                        if (chunk.text) {
+                            streamedText += chunk.text;
+                        }
+                        if (chunk.functionCalls) {
+                            functionCalls.push(...chunk.functionCalls);
+                        }
+                        
+                        if (isLastStage) {
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                ? { ...m, text: streamedText + '...' } 
+                                : m));
+                        } else if (traceAtomUuid) {
+                            const updatedTrace = cognitiveTrace.map(t => 
+                                t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
+                            );
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                : m));
+                        }
+                    }
+                    
+                    // Check again for another command and loop if needed
+                    let loopCount = 0;
+                    while (loopCount < 3) { // Prevent infinite loops
+                        const nextCheck = await checkAndExecuteCommand(streamedText);
+                        if (!nextCheck.shouldContinue || !nextCheck.result) break;
+                        
+                        loopCount++;
+                        loggingService.log('INFO', `[${stage.name}] Command loop iteration ${loopCount}`);
+                        
+                        stagePrompt = nextCheck.result;
+                        streamedText = '';
+                        const nextStream = await sendMessageToGemini(
+                            [{ role: 'user', parts: [{ text: stagePrompt }] }],
+                            stage.systemPrompt,
+                            true,
+                            roleSetting,
+                            aiSettingsRef.current.providers
+                        );
+                        
+                        for await (const chunk of nextStream) {
+                            if (stopGenerationRef.current || skipLayerRef.current) break;
                             if (chunk.text) {
                                 streamedText += chunk.text;
                             }
                             if (chunk.functionCalls) {
                                 functionCalls.push(...chunk.functionCalls);
                             }
-                            finalModelAtom.text = finalStageOutput + streamedText + '...';
-                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...finalModelAtom! } : m));
-                        }
-                        
-                        const lines = streamedText.trim().split('\n');
-                        const lastLine = lines[lines.length - 1]?.trim();
-                        
-                        if (lastLine?.startsWith('? ')) {
-                            const result = await executeAskCommand(lastLine, projectFilesRef.current, aiSettingsRef.current);
-                            contents.push({ role: 'model', parts: [{ text: streamedText }] });
-                            contents.push({ role: 'user', parts: [{ text: `> ${result}` }] });
-                            finalStageOutput += streamedText + `\n> ${result}\n`; 
-                        } else {
-                            finalStageOutput += streamedText;
-                            isStageComplete = true;
-                        }
-                        
-                        finalModelAtom.text = finalStageOutput;
-                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...finalModelAtom! } : m));
-                        workflowOutputs[stage.id] = finalStageOutput;
-
-                    } else if (stage.id !== 'axiom_generation_default') { 
-                        // For intermediate cognitive stages, stream the response into the cognitive trace
-                        const stream = await sendMessageToGemini(contents, stage.systemPrompt, false, roleSetting, aiSettingsRef.current.providers);
-                        
-                        let streamedText = '';
-                        for await (const chunk of stream) {
-                            if (stopGenerationRef.current || interruptLayerRef.current) break;
-                            if (chunk.text) {
-                                streamedText += chunk.text;
+                            
+                            if (isLastStage) {
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, text: streamedText + '...' } 
+                                    : m));
+                            } else if (traceAtomUuid) {
+                                const updatedTrace = cognitiveTrace.map(t => 
+                                    t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
+                                );
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                    : m));
                             }
-                            traceItem!.text = finalStageOutput + streamedText + '...';
-                            // Keep mapping up to date
-                            finalModelAtom.cognitiveTrace = finalModelAtom.cognitiveTrace.map(t => t.uuid === traceItem!.uuid ? traceItem! : t);
-                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...finalModelAtom! } : m));
                         }
-                        
-                        const lines = streamedText.trim().split('\n');
-                        const lastLine = lines[lines.length - 1]?.trim();
-                        
-                        if (lastLine?.startsWith('? ')) {
-                            const result = await executeAskCommand(lastLine, projectFilesRef.current, aiSettingsRef.current);
-                            contents.push({ role: 'model', parts: [{ text: streamedText }] });
-                            contents.push({ role: 'user', parts: [{ text: `> ${result}` }] });
-                            finalStageOutput += streamedText + `\n> ${result}\n\n`; 
-                        } else {
-                            finalStageOutput += streamedText;
-                            isStageComplete = true;
-                            traceItem!.isGenerating = false;
-                        }
-                        
-                        traceItem!.text = finalStageOutput;
-                        finalModelAtom.cognitiveTrace = finalModelAtom.cognitiveTrace.map(t => t.uuid === traceItem!.uuid ? traceItem! : t);
-                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? { ...finalModelAtom! } : m));                        
-                        workflowOutputs[stage.id] = finalStageOutput;
-                        if (isStageComplete) {
-                            loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: finalStageOutput.substring(0, 100) + '...' });
-                        }
-                    } else {
-                        // Axiom Generation and any others that should skip streaming entirely
-                        const stageOutput = await generateText(contents[0].parts[0].text!, stage.systemPrompt, roleSetting, aiSettingsRef.current.providers);
-                        workflowOutputs[stage.id] = stageOutput;
-                        loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: stageOutput.substring(0, 100) + '...' });
-                        isStageComplete = true;
                     }
                 }
+                
+                // If this layer was skipped, note it and continue to next stage
+                if (skipLayerRef.current) {
+                    loggingService.log('INFO', `Stage "${stage.name}" skipped by user after ${streamedText.length} chars.`);
+                    workflowOutputs[stage.id] = streamedText + '\n[Layer skipped by user]';
+                    skipLayerRef.current = false;
+                    // Mark trace atom as done (skipped)
+                    if (traceAtomUuid) {
+                        const idx = cognitiveTrace.findIndex(t => t.uuid === traceAtomUuid);
+                        if (idx !== -1) {
+                            cognitiveTrace[idx] = { ...cognitiveTrace[idx], text: streamedText + '\n[Skipped]', isGenerating: false, name: stage.name + ' (skipped)' } as any;
+                        }
+                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                            ? { ...m, cognitiveTrace: [...cognitiveTrace] } 
+                            : m));
+                    }
+                    lastCompletedStageId = stage.id;
+                    continue;
+                }
+                
+                workflowOutputs[stage.id] = streamedText;
+                lastCompletedStageId = stage.id;
+                
+                if (!isLastStage) {
+                    // Mark the trace atom as done generating (box collapses)
+                    if (traceAtomUuid) {
+                        const idx = cognitiveTrace.findIndex(t => t.uuid === traceAtomUuid);
+                        if (idx !== -1) {
+                            cognitiveTrace[idx] = { ...cognitiveTrace[idx], text: streamedText, isGenerating: false };
+                        }
+                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                            ? { ...m, cognitiveTrace: [...cognitiveTrace] } 
+                            : m));
+                    }
+                } else {
+                    // Final stage done — show clean response
+                    setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                        ? { ...m, text: streamedText } 
+                        : m));
+                }
+                
+                loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: streamedText.substring(0, 100) + '...' });
             }
 
             if (stopGenerationRef.current) {
+                // User hit full stop — keep whatever is displayed (don't throw it away)
+                // Finalize any in-progress trace atoms
+                for (const trace of cognitiveTrace) {
+                    if (trace.isGenerating) {
+                        trace.isGenerating = false;
+                    }
+                }
+                const lastOutput = workflowOutputs[lastCompletedStageId] || '';
+                const finalText = finalModelAtom!.text || lastOutput || '';
+                const finalUpdatedAtom: MemoryAtom = {
+                    ...finalModelAtom!,
+                    text: (finalText || 'Generation stopped before final response.') + '\n\n*[Generation stopped by user]*',
+                    cognitiveTrace: cognitiveTrace.length > 0 ? [...cognitiveTrace] : undefined,
+                };
+                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid ? finalUpdatedAtom : m));
                 setIsLoading(false);
                 setLoadingStage('');
                 return;
             }
             
-            const finalResponseText = workflowOutputs['synthesis_default'] || "The AI pipeline did not produce a final response.";
+            const finalResponseText = workflowOutputs[lastCompletedStageId] || "The AI pipeline did not produce a final response.";
             
             const generatedFilesFromMarkdown = extractCodeBlocksFromText(finalResponseText);
             const generatedFilesFromTools: GeneratedFile[] = [];
@@ -1296,7 +1457,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 ...finalModelAtom!, 
                 text: finalResponseText,
                 generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
-                cognitiveTrace: finalModelAtom.cognitiveTrace?.length ? finalModelAtom.cognitiveTrace : undefined,
+                cognitiveTrace: cognitiveTrace.length > 0 ? cognitiveTrace : undefined,
                 contextSnapshot: {
                     files: [...contextProjectFiles.map(f => f.name), ...contextGeneratedFileNamesRef.current],
                     messages: contextMessagesForPayload.map(m => m.uuid),
@@ -1502,10 +1663,56 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
       stopGenerationRef.current = true;
       loggingService.log('WARN', 'Generation stopped by user.');
     }, []);
-    
+
     const interruptCurrentLayer = useCallback(() => {
-        interruptLayerRef.current = true;
-        loggingService.log('WARN', 'Layer generation interrupted by user.');
+      skipLayerRef.current = true;
+      loggingService.log('WARN', 'Layer skipped by user — advancing to next stage.');
+    }, []);
+
+    // --- Context Manager Stubs ---
+    const clearAllContexts = useCallback(async () => {
+        setMessages(prev => prev.map(m => ({ ...m, isInContext: false, orbitalDecayTurns: null, orbitalStrength: null })));
+        setContextFileIds([]);
+        setContextGeneratedFileNames([]);
+        loggingService.log('INFO', 'All contexts cleared.');
+    }, []);
+
+    const clearAllTrapDoorStates = useCallback(async () => {
+        setMessages(prev => prev.map(m => m.isInContext === false && m.orbitalStrength !== undefined 
+            ? { ...m, orbitalStrength: null, orbitalDecayTurns: null } 
+            : m));
+        loggingService.log('INFO', 'All trap door states cleared.');
+    }, []);
+
+    const getAllContextItems = useCallback(async () => {
+        return messagesRef.current.filter(m => m.isInContext);
+    }, []);
+
+    const deleteContextItem = useCallback(async (id: string) => {
+        setMessages(prev => prev.map(m => m.uuid === id ? { ...m, isInContext: false } : m));
+        loggingService.log('INFO', 'Context item deleted.', { id });
+    }, []);
+
+    const createWorkspace = useCallback(async (name: string, itemIds: string[], fileIds?: string[], description?: string) => {
+        loggingService.log('INFO', 'Workspace creation requested.', { name, itemIds, fileIds, description });
+        // Stub: workspace persistence not yet implemented in this version
+    }, []);
+
+    const getWorkspaces = useCallback(async () => {
+        return [] as any[];
+    }, []);
+
+    const loadWorkspace = useCallback(async (id: string) => {
+        loggingService.log('INFO', 'Workspace load requested.', { id });
+    }, []);
+
+    const createWorkspaceWithState = useCallback(async (name: string, description?: string, workflow?: boolean, settings?: boolean, preferences?: boolean) => {
+        loggingService.log('INFO', 'Workspace with state creation requested.', { name });
+        return '';
+    }, []);
+
+    const loadWorkspaceWithOptions = useCallback(async (id: string, options: any, modes: any) => {
+        loggingService.log('INFO', 'Workspace load with options requested.', { id });
     }, []);
     
     const totalContextTokens = useMemo(() => {
@@ -1569,6 +1776,15 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         onApiTokenLimitMinChange,
         toggleGeneratedFileContext,
         isGeneratedFileInContext,
+        clearAllContexts,
+        clearAllTrapDoorStates,
+        getAllContextItems,
+        deleteContextItem,
+        createWorkspace,
+        getWorkspaces,
+        loadWorkspace,
+        createWorkspaceWithState,
+        loadWorkspaceWithOptions,
         // Hybrid system methods
         queryHybrid: (prompt: string, options?: any) => srgService.queryHybrid(prompt, options),
         getHybridStats: () => srgService.getHybridStats(),
