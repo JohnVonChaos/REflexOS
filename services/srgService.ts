@@ -470,18 +470,8 @@ class SRGService {
       estimatedBytes: hybridStats.corpusSize * 5, // Rough estimate: avg 5 bytes per token
       nodes: hybridStats.nodes,
       edges: hybridStats.edges,
-      synsetGroups: hybridStats.synsetGroups,
-      uniqueWords: hybridStats.nodes
+      synsetGroups: hybridStats.synsetGroups
     };
-  }
-
-  /**
-   * Get a manifest of the loaded corpus for planner awareness.
-   */
-  public getCorpusManifest(): string {
-    const stats = this.getCorpusStats();
-    if (stats.totalTokens === 0) return '';
-    return `[CORPUS MANIFEST] ${stats.totalTokens} tokens indexed, ${stats.uniqueWords} unique words, ${stats.edges} relations, ${stats.synsetGroups} synset groups.`;
   }
 
   /**
@@ -501,12 +491,12 @@ class SRGService {
   /**
    * Ingest text into the hybrid system for learning
    */
-  public async ingestHybrid(
+  public ingestHybrid(
     text: string,
     moduleMetadata?: { title: string; source: string; category: KnowledgeModule['category'] }
-  ): Promise<void> {
+  ): void {
     const startPosition = this.hybrid.getStats().corpusSize;
-    await this.hybrid.ingest(text);
+    this.hybrid.ingest(text);
     
     if (moduleMetadata) {
       const tokenCount = text.split(/\s+/).length;
@@ -518,28 +508,11 @@ class SRGService {
         tokenCount,
         loadedAt: Date.now(),
         startPosition,
-        endPosition: this.hybrid.getStats().corpusSize
+        endPosition: this.hybrid.getStats().corpusSize,
+        isActive: true
       };
       this.knowledgeModules.push(module);
-    }
-    
-    // Always trigger save to persist ingested text to IDB
-    this.triggerSave();
-  }
-
-  /**
-   * Restore hybrid corpus from persisted storage (called after init on app startup)
-   */
-  public async restoreHybridCorpus(): Promise<void> {
-    try {
-      const hybridStats = this.hybrid.getStats();
-      console.log('[SRG] Hybrid corpus restored:', { 
-        corpusSize: hybridStats.corpusSize,
-        nodes: hybridStats.nodes,
-        modules: this.knowledgeModules.length
-      });
-    } catch (err) {
-      console.error('[SRG] Failed to restore hybrid corpus:', err);
+      this.triggerSave();
     }
   }
 
@@ -611,6 +584,35 @@ class SRGService {
     this.knowledgeModules.splice(index, 1);
     this.triggerSave();
     return true;
-  }}
+  }
+
+  /**
+   * Toggle a module's active state
+   */
+  public toggleModuleActive(moduleId: string): boolean {
+    const module = this.knowledgeModules.find(m => m.id === moduleId);
+    if (!module) return false;
+    
+    module.isActive = module.isActive === false ? true : false;
+    this.triggerSave();
+    return true;
+  }
+
+  /**
+   * Restore hybrid corpus from persisted storage (called after init on app startup)
+   */
+  public async restoreHybridCorpus(): Promise<void> {
+    try {
+      const hybridStats = this.hybrid.getStats();
+      console.log('[SRG] Hybrid corpus restored:', { 
+        corpusSize: hybridStats.corpusSize,
+        nodes: hybridStats.nodes,
+        modules: this.knowledgeModules.length
+      });
+    } catch (err) {
+      console.error('[SRG] Failed to restore hybrid corpus:', err);
+    }
+  }
+}
 
 export const srgService = new SRGService();

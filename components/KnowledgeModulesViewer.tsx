@@ -10,12 +10,32 @@ interface KnowledgeModulesViewerProps {
   onModulesChange?: () => void;
 }
 
+interface SRGQueryState {
+  query: string;
+  window: number;
+  maxDepth: number;
+  useSynsets: boolean;
+  useRelations: boolean;
+  result?: any;
+  loading: boolean;
+  error?: string;
+}
+
 export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
   isOpen,
   onClose,
   onModulesChange
 }) => {
   const [modules, setModules] = useState<KnowledgeModule[]>(() => srgService.getKnowledgeModules());
+  const [srgQuery, setSrgQuery] = useState<SRGQueryState>({
+    query: '',
+    window: 20,
+    maxDepth: 3,
+    useSynsets: true,
+    useRelations: true,
+    loading: false
+  });
+  const [showSRGQuery, setShowSRGQuery] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -80,13 +100,67 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
   };
 
   const handleDeleteModule = (moduleId: string) => {
-    // TODO: Implement module deletion in srgService
-    alert('Module deletion not yet implemented. Use session export/import to manage modules for now.');
+    const module = modules.find(m => m.id === moduleId);
+    if (!module) return;
+
+    const confirmed = window.confirm(
+      `Delete "${module.title}"?\n\nThis will remove ${module.tokenCount.toLocaleString()} entries from the knowledge base. This action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const success = srgService.deleteKnowledgeModule(moduleId);
+      if (success) {
+        setModules(srgService.getKnowledgeModules());
+        onModulesChange?.();
+        alert(`Deleted "${module.title}" from knowledge base.`);
+      } else {
+        alert('Failed to delete module.');
+      }
+    } catch (e: any) {
+      console.error('[KnowledgeModules] Failed to delete:', e);
+      alert(`Failed to delete module: ${e.message}`);
+    }
   };
 
   const handleToggleActive = (moduleId: string) => {
-    // TODO: Implement active/inactive toggle in srgService
-    alert('Module toggle not yet implemented. All loaded modules are currently active.');
+    const success = srgService.toggleModuleActive(moduleId);
+    if (success) {
+      setModules(srgService.getKnowledgeModules());
+      onModulesChange?.();
+    }
+  };
+
+  const handleSRGQuery = async () => {
+    if (!srgQuery.query.trim()) {
+      setSrgQuery(prev => ({ ...prev, error: 'Query cannot be empty' }));
+      return;
+    }
+
+    setSrgQuery(prev => ({ ...prev, loading: true, error: undefined }));
+    try {
+      const result = srgService.queryHybrid(srgQuery.query, {
+        window: srgQuery.window,
+        maxDepth: srgQuery.maxDepth,
+        useSynsets: srgQuery.useSynsets,
+        useRelations: srgQuery.useRelations,
+        generateLength: 100
+      });
+
+      setSrgQuery(prev => ({
+        ...prev,
+        result,
+        loading: false,
+        error: result ? undefined : 'Query returned no results'
+      }));
+    } catch (e: any) {
+      setSrgQuery(prev => ({
+        ...prev,
+        loading: false,
+        error: e.message || 'Query failed'
+      }));
+    }
   };
 
   const getCategoryColor = (category: KnowledgeModule['category']) => {
@@ -159,7 +233,9 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
                         {module.category}
                       </span>
                       <span>•</span>
-                      <span className="text-green-400">Active</span>
+                      <span className={module.isActive !== false ? "text-green-400" : "text-orange-400"}>
+                        {module.isActive !== false ? "Active" : "Inactive"}
+                      </span>
                     </div>
                   </div>
                   <button
@@ -175,11 +251,11 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
                 <div className="flex items-center gap-4 pt-3 border-t border-gray-700/50">
                   <div className="flex items-center gap-2">
                     <ToggleSwitch
-                      checked={true}
+                      checked={module.isActive !== false}
                       onToggle={() => handleToggleActive(module.id)}
                       title="Toggle active/inactive"
                     />
-                    <span className="text-sm text-gray-400">Active</span>
+                    <span className="text-sm text-gray-400">{module.isActive !== false ? "Active" : "Inactive"}</span>
                   </div>
 
                   <div className="flex-1 flex items-center gap-2">
@@ -205,6 +281,112 @@ export const KnowledgeModulesViewer: React.FC<KnowledgeModulesViewerProps> = ({
                 </div>
               </div>
             ))
+          )}
+        </div>
+
+        {/* SRG Query Panel */}
+        <div className="border-t border-gray-700 bg-gray-800/50 p-4">
+          <button
+            onClick={() => setShowSRGQuery(!showSRGQuery)}
+            className="w-full flex items-center justify-between px-3 py-2 bg-gray-700/50 hover:bg-gray-700 rounded-md transition-colors text-left"
+          >
+            <span className="font-semibold text-cyan-400">
+              {showSRGQuery ? '▼' : '▶'} SRG Query Tester
+            </span>
+            <span className="text-xs text-gray-500">Test traversal settings</span>
+          </button>
+
+          {showSRGQuery && (
+            <div className="mt-3 space-y-3 p-3 bg-gray-900/50 rounded-md border border-gray-700/50">
+              {/* Query Input */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-400 mb-1">Query</label>
+                <input
+                  type="text"
+                  value={srgQuery.query}
+                  onChange={(e) => setSrgQuery(prev => ({ ...prev, query: e.target.value, error: undefined }))}
+                  placeholder="Ask the SRG..."
+                  className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500"
+                  onKeyPress={(e) => e.key === 'Enter' && handleSRGQuery()}
+                />
+              </div>
+
+              {/* Traversal Controls */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 mb-1">Window: {srgQuery.window}</label>
+                  <input
+                    type="range"
+                    min="5"
+                    max="50"
+                    value={srgQuery.window}
+                    onChange={(e) => setSrgQuery(prev => ({ ...prev, window: parseInt(e.target.value) }))}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 mb-1">Depth: {srgQuery.maxDepth}</label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="8"
+                    value={srgQuery.maxDepth}
+                    onChange={(e) => setSrgQuery(prev => ({ ...prev, maxDepth: parseInt(e.target.value) }))}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                  />
+                </div>
+              </div>
+
+              {/* Feature Toggles */}
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={srgQuery.useSynsets}
+                    onChange={(e) => setSrgQuery(prev => ({ ...prev, useSynsets: e.target.checked }))}
+                    className="w-4 h-4 accent-cyan-500"
+                  />
+                  <span className="text-xs text-gray-400">Synsets</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={srgQuery.useRelations}
+                    onChange={(e) => setSrgQuery(prev => ({ ...prev, useRelations: e.target.checked }))}
+                    className="w-4 h-4 accent-cyan-500"
+                  />
+                  <span className="text-xs text-gray-400">Relations</span>
+                </label>
+              </div>
+
+              {/* Query Button */}
+              <button
+                onClick={handleSRGQuery}
+                disabled={srgQuery.loading}
+                className="w-full px-3 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:bg-gray-600 text-white rounded-md text-sm font-semibold transition-colors"
+              >
+                {srgQuery.loading ? 'Querying...' : 'Query SRG'}
+              </button>
+
+              {/* Error Display */}
+              {srgQuery.error && (
+                <div className="p-2 bg-red-900/30 border border-red-700/50 rounded text-xs text-red-300">
+                  {srgQuery.error}
+                </div>
+              )}
+
+              {/* Result Display */}
+              {srgQuery.result && (
+                <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded text-xs space-y-1">
+                  <div className="text-cyan-300 font-semibold">Result:</div>
+                  <div className="text-gray-300 max-h-32 overflow-y-auto">
+                    {typeof srgQuery.result === 'string'
+                      ? srgQuery.result
+                      : JSON.stringify(srgQuery.result, null, 2)}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
 

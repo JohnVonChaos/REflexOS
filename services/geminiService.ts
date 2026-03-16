@@ -336,149 +336,67 @@ export interface WebSearchResult {
 // FIX: Updated signature to accept AISettings to get playwrightSearchUrl
 export const performWebSearch = async (query: string, roleSetting: RoleSetting, providers: AISettings['providers'], aiSettings?: AISettings): Promise<WebSearchResult | null> => {
     const provider = roleSetting.provider;
-    loggingService.log('DEBUG', 'Performing web search', { query, provider });
-    if (provider === 'gemini') {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: query }] }],
-            config: {
-                tools: [{ googleSearch: {} }],
-            },
-        });
+    loggingService.log('INFO', '🔍 WEB SEARCH INITIATED', { query, provider });
+    console.log('[performWebSearch] Starting search for:', query, 'Provider:', provider);
+    
+    try {
+        if (provider === 'gemini') {
+            loggingService.log('INFO', '🔍 Using Gemini with googleSearch tool');
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ role: 'user', parts: [{ text: query }] }],
+                config: {
+                    tools: [{ googleSearch: {} }],
+                },
+            });
 
-        const insightText = response.text;
-        const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+            const insightText = response.text;
+            const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
 
-        const sources = groundingChunks
-            .filter((chunk): chunk is { web: { uri: string; title: string } } =>
-                !!chunk && !!chunk.web?.uri
-            )
-            .map(chunk => ({ web: { uri: chunk.web.uri, title: chunk.web.title || chunk.web.uri } }));
+            const sources = groundingChunks
+                .filter((chunk): chunk is { web: { uri: string; title: string } } =>
+                    !!chunk && !!chunk.web?.uri
+                )
+                .map(chunk => ({ web: { uri: chunk.web.uri, title: chunk.web.title || chunk.web.uri } }));
 
-        return { text: insightText, sources };
+            loggingService.log('INFO', '✅ Gemini search completed', { resultLength: insightText.length, sources: sources.length });
+            return { text: insightText, sources };
 
-    }
-    else {
-        // Check if current provider has webSearchApiUrl configured
-        const providerSettings = providers[provider];
-        if (providerSettings.webSearchApiUrl) {
-            const searchEndpoint = `${providerSettings.webSearchApiUrl.replace(/\/+$/, '')}/websearch`;
-            try {
-                const response = await fetch(searchEndpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query }),
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Search endpoint error: ${response.status} ${response.statusText}`);
-                }
-
-                const result = await response.json();
-                
-                // Check if the response contains an error
-                if (result.error) {
-                    throw new Error(`Search API returned error: ${result.error}`);
-                }
-                
-                // Handle different response formats:
-                // 1. WebSearchResult format: {text: string, sources: [...]}
-                // 2. Brave API format: {text: string, results: [...]}
-                if (result.sources && Array.isArray(result.sources)) {
-                    // Standard WebSearchResult format
-                    loggingService.log('INFO', `Web search successful via ${provider} custom endpoint`, { query, sources: result.sources.length });
-                    return result as WebSearchResult;
-                } else if (result.results && Array.isArray(result.results)) {
-                    // Brave API format - convert to WebSearchResult
-                    const sources = result.results.map((r: any) => ({
-                        web: {
-                            uri: r.url || '',
-                            title: r.title || 'Untitled'
-                        }
-                    }));
-                    const webSearchResult: WebSearchResult = {
-                        text: result.text || 'No text provided',
-                        sources: sources
-                    };
-                    loggingService.log('INFO', `Web search successful via ${provider} custom endpoint (Brave format)`, { query, sources: sources.length });
-                    return webSearchResult;
-                } else {
-                    // Invalid format
-                    loggingService.log('WARN', `${provider} search endpoint returned invalid format`, { result });
-                    return { text: 'Search endpoint returned invalid response format.', sources: [] };
-                }
-
-            } catch (e: any) {
-                const errorText = `An error occurred while contacting the web search endpoint (${searchEndpoint}): ${e.message}. Make sure your local search server is running and exposes a POST /websearch endpoint.`;
-                loggingService.log('ERROR', `Error calling ${provider} web search endpoint`, { error: e.toString() });
-                return { text: errorText, sources: [] };
-            }
         }
-        // Fallback: Use Playwright search server for ANY provider without native search
         else {
-            const playwrightUrl = aiSettings?.playwrightSearchUrl || 'http://localhost:3000';
-            loggingService.log('INFO', `Provider ${provider} has no native search - using Playwright at ${playwrightUrl}`);
-
-            try {
-                const searchEndpoint = `${playwrightUrl.replace(/\/+$/, '')}/search`;
-
-                const response = await fetch(searchEndpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, maxResults: 5 }),
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Playwright search error: ${response.status} ${response.statusText}`);
-                }
-
-                const results = await response.json();
-
-                // Handle different response formats from search API
-                let searchResults = [];
-                if (Array.isArray(results)) {
-                    searchResults = results;
-                } else if (results && Array.isArray(results.results)) {
-                    searchResults = results.results;
-                } else if (results && Array.isArray(results.data)) {
-                    searchResults = results.data;
-                } else {
-                    loggingService.log('WARN', 'Unexpected search API response format', { results });
-                    return { text: 'Search API returned unexpected format.', sources: [] };
-                }
-
-                // Ensure searchResults is a valid array
-                if (!Array.isArray(searchResults)) {
-                    loggingService.log('WARN', 'Search results is not an array', { searchResults });
-                    return { text: 'Search API returned invalid results format.', sources: [] };
-                }
-
-                if (searchResults.length === 0) {
-                    return { text: 'No search results found.', sources: [] };
-                }
-
-                const formattedText = searchResults.map((r: any, idx: number) =>
-                    `[${idx + 1}] ${r?.title || r?.name || 'Untitled'}\n${r?.url || r?.uri || r?.link || ''}\n${r?.snippet || r?.description || r?.summary || ''}\n`
-                ).join('\n');
-
-                const sources = searchResults
-                    .filter((r: any) => r && (r.url || r.uri || r.link)) // Filter out invalid entries
-                    .map((r: any) => ({ 
-                        web: { 
-                            uri: r.url || r.uri || r.link || '', 
-                            title: r.title || r.name || 'Untitled' 
-                        } 
-                    }));
-
-                loggingService.log('INFO', `Playwright search returned ${searchResults.length} results`);
-                return { text: formattedText, sources: sources };
-
-            } catch (e: any) {
-                loggingService.log('ERROR', 'Playwright search failed', { error: e.message });
-                return { text: `Web search failed: ${e.message}`, sources: [] };
+            loggingService.log('INFO', `🔍 Using ${provider} provider`);
+            // Check if current provider has webSearchApiUrl configured
+            const providerSettings = providers[provider];
+            if (!providerSettings) {
+                throw new Error(`Provider '${provider}' not found in settings`);
             }
+            if (!providerSettings.webSearchApiUrl) {
+                throw new Error(`Provider '${provider}' has no webSearchApiUrl configured`);
+            }
+            
+            const searchEndpoint = `${providerSettings.webSearchApiUrl.replace(/\/+$/, '')}/websearch`;
+            loggingService.log('INFO', `🔍 Calling web search endpoint: ${searchEndpoint}`);
+            
+            const response = await fetch(searchEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Search endpoint error: ${response.status} ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            loggingService.log('INFO', '✅ Web search completed', { resultLength: result?.text?.length || 0 });
+            
+            return result || null;
         }
+    } catch (error: any) {
+        loggingService.log('ERROR', '❌ WEB SEARCH FAILED', { error: error.message, stack: error.stack });
+        console.error('[performWebSearch] ERROR:', error);
+        return null;
     }
 };
 

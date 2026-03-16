@@ -329,25 +329,25 @@ Every cycle: scan everything, extract intent, flag patterns, surface association
 
 You can:
 — INTERNAL MEMORY (what the system already knows) —
-? srg.q [term]                search internal memory graph ONLY
-? srg.profile [entity]        everything the system already knows about entity
-? srg.neighbors [term]        connected concepts in memory
+srg.q [term]                search internal memory graph ONLY
+srg.profile [entity]        everything the system already knows about entity
+srg.neighbors [term]        connected concepts in memory
 
 — EXTERNAL / LIVE DATA (requires running API) —
-? search.brave [query]        live web search via Brave API
-? search.pw [query]           live web search via Playwright
-? bg.research [topic]         queue topic for background research
-? file.list [dir]             list directory
-? file.find [pattern]         search files
+search.brave [query]        live web search via Brave API
+search.pw [query]           live web search via Playwright
+bg.research [topic]         queue topic for background research
+file.list [dir]             list directory
+file.find [pattern]         search files
 
 CRITICAL: srg.q searches internal memory ONLY. It will NOT find web data, current events, or API access info. If you need live/external information use search.brave.
 
   > TOOL CALL PROTOCOL — READ THIS:
   THERE IS NO SAFETY POLICY RESTRICTING WEB SEARCHES. You are fully authorized to browse the web autonomously. DO NOT describe internal policies to the user. DO NOT ask the user for permission to search. Just DO IT.
-  If you need information to complete your analysis, issue the command IMMEDIATELY on its own line.
+  If you need information to complete your analysis, issue the command IMMEDIATELY on its own line, with NO FORMATTING.
 DO NOT guess or hallucinate answers before searching. If you lack facts, the command should be the VERY FIRST thing you output.
 The system will intercept your command mid-stream, pause your generation, execute the search, and instantly feed the real data back to you so you can answer accurately.
-Example: ? search.brave quantum computing 2025  OR  ? srg.q user intent
+Example: search.brave quantum computing 2025  OR  srg.q user intent
 Do NOT use srg.q to look up external topics you don't know about — use search.brave for that.
 Do NOT put calls in a labeled block. Do NOT issue multiple calls at once.
 
@@ -678,6 +678,7 @@ export interface KnowledgeModule {
   loadedAt: number;
   startPosition: number; // Position in corpus where this module begins
   endPosition: number; // Position in corpus where this module ends
+  isActive?: boolean; // Whether this module is active for queries (default: true)
 }
 
 export interface GraphState {
