@@ -762,7 +762,25 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             
             const finalResponseText = workflowOutputs['synthesis_default'] || "The AI pipeline did not produce a final response.";
             
-            const generatedFilesFromMarkdown = extractCodeBlocksFromText(finalResponseText);
+            // Extract code blocks from ALL workflow stages, not just the final one
+            let generatedFilesFromMarkdown: GeneratedFile[] = [];
+            const processedFileNames = new Set<string>();
+            
+            // First, process all stages in order to collect scripts
+            for (const stageId in workflowOutputs) {
+                const stageOutput = workflowOutputs[stageId];
+                if (stageOutput && typeof stageOutput === 'string') {
+                    const stageFiles = extractCodeBlocksFromText(stageOutput);
+                    // Only add files that haven't been seen before (avoid duplicates across stages)
+                    for (const file of stageFiles) {
+                        if (!processedFileNames.has(file.name)) {
+                            generatedFilesFromMarkdown.push(file);
+                            processedFileNames.add(file.name);
+                        }
+                    }
+                }
+            }
+            
             const generatedFilesFromTools: GeneratedFile[] = [];
 
             if (functionCalls.length > 0) {

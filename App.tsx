@@ -20,6 +20,8 @@ import type { VerificationPayload } from './jelly/types';
 import { ImportHistoryPanel } from './components/ImportHistoryPanel';
 import { BackgroundCognitionModal } from './components/BackgroundCognitionModal';
 import { KnowledgeModulesViewer } from './components/KnowledgeModulesViewer';
+import { importEntries, parseImportFile } from './services/chatImportService';
+import { contextTierManager } from './services/contextTierManager';
 
 // Start with an empty project. User can import files as needed.
 const MOCK_PROJECT_FILES: ProjectFile[] = [];
@@ -260,6 +262,61 @@ function App() {
     event.target.value = '';
   };
 
+  const handleImportChats = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const content = await file.text();
+      let entries: any[] = [];
+      const trimmed = content.trim();
+
+      if (trimmed.startsWith('[')) {
+        entries = JSON.parse(trimmed);
+      } else {
+        entries = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => JSON.parse(l));
+      }
+
+      // First, import raw entries as atoms (for later reference)
+      const created = await importEntries(entries as any);
+      console.log('[App] Imported raw entries as atoms:', created.length);
+
+      // Now process conversations: group by ID, summarize, create knowledge modules, and organize into workspaces
+      const { conversationProcessingService } = await import('./services/conversationProcessingService');
+      const processed = await conversationProcessingService.processImportedConversations(created, chat.aiSettings);
+      console.log('[App] Processed conversations:', processed.length);
+
+      // Create a workspace for each processed conversation
+      let workspaceCount = 0;
+      for (const conversation of processed) {
+        try {
+          const wsId = `ws-import-${Date.now()}-${workspaceCount}-${Math.random().toString(36).substr(2, 9)}`;
+          await contextTierManager.createWorkspace({
+            id: wsId,
+            name: conversation.title,
+            itemIds: created
+              .filter(a => a.conversationId === conversation.conversationId)
+              .map(a => a.uuid),
+            fileIds: [],
+            description: `📌 ${conversation.summary}\n\nSource: ${conversation.source}\nTurns: ${conversation.turnCount}\nTokens: ~${conversation.tokens}\n\nKey points:\n${conversation.keyPoints.map(kp => `• ${kp}`).join('\n')}`
+          });
+          workspaceCount++;
+          console.log('[App] Created workspace for conversation:', conversation.conversationId);
+        } catch (wsErr) {
+          console.error(`Failed to create workspace for ${conversation.conversationId}:`, wsErr);
+        }
+      }
+
+      const msg = `✅ Processed ${processed.length} conversation${processed.length !== 1 ? 's' : ''} and created ${workspaceCount} workspace${workspaceCount !== 1 ? 's' : ''}.\n\nAll conversations have been summarized, added to knowledge modules, and organized by topic.`;
+      alert(msg);
+      console.log('[App] Import complete:', { conversations: processed.length, workspaces: workspaceCount });
+    } catch (e: any) {
+      console.error('Failed to import chat file', e);
+      alert(`Failed to import chat: ${e.message}`);
+    }
+    event.target.value = '';
+  };
+
   const handleExportState = () => {
     const srgState = srgService.exportState();
     const stats = srgService.getCorpusStats();
@@ -375,6 +432,7 @@ function App() {
           axioms={allAxioms}
           onImportFiles={handleImportFiles}
           onImportState={handleImportState}
+          onImportChats={handleImportChats}
           onShowImportHistory={() => setIsImportHistoryOpen(true)}
           onDeleteFiles={chat.deleteFiles}
           onCompareFiles={handleCompareFiles}

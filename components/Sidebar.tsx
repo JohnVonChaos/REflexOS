@@ -14,6 +14,7 @@ interface SidebarProps {
     axioms: MemoryAtom[];
     onImportFiles: (event: React.ChangeEvent<HTMLInputElement>) => void;
     onImportState: (event: React.ChangeEvent<HTMLInputElement>) => void;
+    onImportChats?: (event: React.ChangeEvent<HTMLInputElement>) => void;
     onExportAll: () => void;
     onExportState: () => void;
     onCompareFiles: (files: ProjectFile[]) => void;
@@ -166,10 +167,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onToggleGeneratedFileContext,
     isGeneratedFileInContext,
     onShowBackgroundCognition,
+    onImportChats,
 }) => {
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
     const projectFileInputRef = useRef<HTMLInputElement>(null);
     const stateFileInputRef = useRef<HTMLInputElement>(null);
+    const chatImportInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileSelectChange = (fileId: string, checked: boolean) => {
         setSelectedFileIds(prev =>
@@ -275,6 +278,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* --- Hidden File Inputs --- */}
             <input type="file" multiple ref={projectFileInputRef} onChange={onImportFiles} className="hidden" />
             <input type="file" accept=".json" ref={stateFileInputRef} onChange={onImportState} className="hidden" />
+            {onImportChats && <input type="file" accept=".json,.txt" ref={chatImportInputRef} onChange={onImportChats} className="hidden" />}
 
             {/* --- Import / Export Bar --- */}
             <div className="p-2 border-b border-gray-700/50 space-y-2">
@@ -282,6 +286,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <button onClick={() => projectFileInputRef.current?.click()} title="Import project files" className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"><UploadIcon /> Import Files</button>
                     <button onClick={() => stateFileInputRef.current?.click()} title="Import session state from a .json file" className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"><UploadIcon /> Import State</button>
                 </div>
+                {onImportChats && (
+                    <button onClick={() => chatImportInputRef.current?.click()} title="Import chat logs (ChatGPT, Claude, etc.)" className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"><UploadIcon /> Import Chats</button>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                     <button onClick={onExportAll} title="Export all generated files as a .zip" disabled={generatedFiles.length === 0} className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"><DownloadIcon /> Export Generated</button>
                     <button onClick={onExportState} title="Export current session to a .json file" className="w-full flex items-center justify-center gap-2 p-2 text-xs rounded-md bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"><SaveIcon /> Export State</button>

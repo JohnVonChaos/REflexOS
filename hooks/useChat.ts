@@ -11,6 +11,7 @@ import { extractCodeBlocksFromText } from '../services/codeBlockParser';
 import { loggingService } from '../services/loggingService';
 import { graphService } from '../services/graphService';
 import { srgService } from '../services/srgService';
+import { contextTierManager } from '../services/contextTierManager';
 import { Content, FunctionCall } from '@google/genai';
 
 // Helper function to map 1-10 strength to a number of turns based on Fibonacci.
@@ -305,7 +306,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
             
             // Build context packets - respect what the context manager has marked as relevant
-            const baseContextPackets = {
+            const baseContextPackets: Record<string, string> = {
                 USER_QUERY: recentHistory.filter(m => m.role === 'user').slice(-1)[0]?.text || 'No recent user query.',
                 RCB: JSON.stringify(rcbRef.current, null, 2),
                 RECENT_HISTORY: recentHistory.map(m => `${m.role}: ${m.text}`).join('\n'),
@@ -325,6 +326,35 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 RESONANCE_MEMORIES: 'None.',
                 PREVIOUS_COGNITIVE_TRACE: 'N/A',
                 SRG_TRACE: 'N/A',
+                IMPORTED_HISTORY: (() => {
+                    // Gather imported conversation atoms (source + conversationId tracking)
+                    const importedAtoms = currentMessages.filter(m => m.source && m.conversationId && m.isInContext);
+                    if (importedAtoms.length === 0) return 'No imported conversation history in context.';
+                    
+                    // Group by source and conversation for better readability
+                    const grouped: Record<string, Record<string, MemoryAtom[]>> = {};
+                    for (const atom of importedAtoms) {
+                        const src = atom.source || 'unknown';
+                        const conv = atom.conversationId || 'default';
+                        if (!grouped[src]) grouped[src] = {};
+                        if (!grouped[src][conv]) grouped[src][conv] = [];
+                        grouped[src][conv].push(atom);
+                    }
+                    
+                    // Format with speaker attribution
+                    let result = '';
+                    for (const [source, convs] of Object.entries(grouped)) {
+                        result += `\n[Source: ${source}]`;
+                        for (const [convId, atoms] of Object.entries(convs)) {
+                            result += `\n  Conversation: ${convId}\n`;
+                            for (const atom of atoms) {
+                                const speaker = atom.role === 'user' ? '👤 User' : '🤖 Assistant';
+                                result += `    ${speaker}: ${atom.text?.substring(0, 150) || ''}${atom.text && atom.text.length > 150 ? '...' : ''}\n`;
+                            }
+                        }
+                    }
+                    return result.trim();
+                })(),
             };
 
             // Build stage prompt from selected inputs
@@ -1588,7 +1618,25 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             
             const finalResponseText = workflowOutputs[lastCompletedStageId] || "The AI pipeline did not produce a final response.";
             
-            const generatedFilesFromMarkdown = extractCodeBlocksFromText(finalResponseText);
+            // Extract code blocks from ALL workflow stages, not just the final one
+            let generatedFilesFromMarkdown: GeneratedFile[] = [];
+            const processedFileNames = new Set<string>();
+            
+            // First, process all stages in order to collect scripts
+            for (const stageId in workflowOutputs) {
+                const stageOutput = workflowOutputs[stageId];
+                if (stageOutput && typeof stageOutput === 'string') {
+                    const stageFiles = extractCodeBlocksFromText(stageOutput);
+                    // Only add files that haven't been seen before (avoid duplicates across stages)
+                    for (const file of stageFiles) {
+                        if (!processedFileNames.has(file.name)) {
+                            generatedFilesFromMarkdown.push(file);
+                            processedFileNames.add(file.name);
+                        }
+                    }
+                }
+            }
+            
             const generatedFilesFromTools: GeneratedFile[] = [];
 
             if (functionCalls.length > 0) {
@@ -1853,26 +1901,127 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     }, []);
 
     const createWorkspace = useCallback(async (name: string, itemIds: string[], fileIds?: string[], description?: string) => {
-        loggingService.log('INFO', 'Workspace creation requested.', { name, itemIds, fileIds, description });
-        // Stub: workspace persistence not yet implemented in this version
+        try {
+            const wsId = `ws-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await contextTierManager.createWorkspace({
+                id: wsId,
+                name,
+                itemIds,
+                fileIds: fileIds || [],
+                description: description || `Workspace created on ${new Date().toLocaleString()}`
+            });
+            loggingService.log('INFO', 'Workspace created successfully.', { wsId, name, itemIds, fileIds });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to create workspace.', { error: e });
+            throw e;
+        }
     }, []);
 
     const getWorkspaces = useCallback(async () => {
-        return [] as any[];
+        try {
+            const workspaces = await contextTierManager.getWorkspaces();
+            loggingService.log('INFO', 'Retrieved workspaces.', { count: workspaces.length });
+            return workspaces;
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to retrieve workspaces.', { error: e });
+            return [];
+        }
     }, []);
 
     const loadWorkspace = useCallback(async (id: string) => {
-        loggingService.log('INFO', 'Workspace load requested.', { id });
-    }, []);
+        try {
+            const workspace = await contextTierManager.getWorkspace(id);
+            if (!workspace) {
+                throw new Error(`Workspace not found: ${id}`);
+            }
+
+            const itemIds = workspace.itemIds || [];
+            const fileIds = workspace.fileIds || [];
+
+            for (const itemId of itemIds) {
+                const atom = messages.find(m => m.uuid === itemId);
+                if (atom && !atom.isInContext) {
+                    setMessages(prev => prev.map(m => m.uuid === itemId ? { ...m, isInContext: true } : m));
+                }
+            }
+
+            for (const fileId of fileIds) {
+                if (!contextFileIds.includes(fileId)) {
+                    setContextFileIds(prev => [...prev, fileId]);
+                }
+            }
+
+            loggingService.log('INFO', 'Workspace loaded successfully.', { id, itemCount: itemIds.length, fileCount: fileIds.length });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to load workspace.', { error: e, id });
+            throw e;
+        }
+    }, [messages, contextFileIds]);
 
     const createWorkspaceWithState = useCallback(async (name: string, description?: string, workflow?: boolean, settings?: boolean, preferences?: boolean) => {
-        loggingService.log('INFO', 'Workspace with state creation requested.', { name });
-        return '';
-    }, []);
+        try {
+            const wsId = `ws-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const workspaceData: any = {
+                id: wsId,
+                name,
+                description: description || `Full state workspace created on ${new Date().toLocaleString()}`,
+                itemIds: messages.filter(m => m.isInContext).map(m => m.uuid),
+                fileIds: contextFileIds,
+                createdAt: Date.now(),
+            };
+
+            if (workflow) workspaceData.workflow = aiSettingsRef.current.workflow;
+            if (settings) workspaceData.aiSettings = aiSettingsRef.current;
+            if (preferences) workspaceData.preferences = { rcb: rcbRef.current };
+
+            await contextTierManager.createWorkspace(workspaceData);
+            loggingService.log('INFO', 'Full state workspace created.', { wsId, name, hasWorkflow: !!workflow, hasSettings: !!settings, hasPreferences: !!preferences });
+            return wsId;
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to create full state workspace.', { error: e });
+            throw e;
+        }
+    }, [messages, contextFileIds]);
 
     const loadWorkspaceWithOptions = useCallback(async (id: string, options: any, modes: any) => {
-        loggingService.log('INFO', 'Workspace load with options requested.', { id });
-    }, []);
+        try {
+            const workspace = await contextTierManager.getWorkspace(id);
+            if (!workspace) {
+                throw new Error(`Workspace not found: ${id}`);
+            }
+
+            const itemIds = workspace.itemIds || [];
+            const fileIds = workspace.fileIds || [];
+
+            for (const itemId of itemIds) {
+                const atom = messages.find(m => m.uuid === itemId);
+                if (atom && !atom.isInContext) {
+                    setMessages(prev => prev.map(m => m.uuid === itemId ? { ...m, isInContext: true } : m));
+                }
+            }
+
+            for (const fileId of fileIds) {
+                if (!contextFileIds.includes(fileId)) {
+                    setContextFileIds(prev => [...prev, fileId]);
+                }
+            }
+
+            if (workspace.workflow && options.workflow) {
+                setAiSettings(prev => ({ ...prev, workflow: workspace.workflow }));
+            }
+            if (workspace.aiSettings && options.settings) {
+                setAiSettings(workspace.aiSettings);
+            }
+            if (workspace.preferences?.rcb && options.preferences) {
+                rcbRef.current = workspace.preferences.rcb;
+            }
+
+            loggingService.log('INFO', 'Workspace loaded with options.', { id, itemCount: itemIds.length, fileCount: fileIds.length });
+        } catch (e) {
+            loggingService.log('ERROR', 'Failed to load workspace with options.', { error: e, id });
+            throw e;
+        }
+    }, [messages, contextFileIds]);
     
     const totalContextTokens = useMemo(() => {
         const allGeneratedFiles = messages.flatMap(m => m.generatedFiles || []);
