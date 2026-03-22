@@ -6,6 +6,7 @@ import { CloseIcon, PlusIcon, TrashIcon, GripVerticalIcon, WorkflowIcon } from '
 import { ToggleSwitch } from './ToggleSwitch';
 import ProfileSelector from './ProfileSelector';
 import { workflowProfileManager, WorkflowProfile } from '../services/workflowProfileManager';
+import { testBraveAPI, testLMStudio } from '../services/endpointTestService';
 
 const uuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -81,6 +82,12 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
     const [localSettings, setLocalSettings] = useState<AISettings>(settings);
     const [expandedStage, setExpandedStage] = useState<string | null>(null);
     const [currentProfileId, setCurrentProfileId] = useState<string | undefined>(undefined);
+    
+    // Test result states
+    const [braveTestResult, setBraveTestResult] = useState<{message: string; success: boolean} | null>(null);
+    const [braveTestLoading, setBraveTestLoading] = useState(false);
+    const [lmstudioTestResult, setLmstudioTestResult] = useState<{message: string; success: boolean} | null>(null);
+    const [lmstudioTestLoading, setLmstudioTestLoading] = useState(false);
 
     const handleLoadProfile = useCallback(async (profile: WorkflowProfile) => {
         setLocalSettings(prev => ({
@@ -107,6 +114,142 @@ export const WorkflowDesigner: React.FC<WorkflowDesignerProps> = ({ isOpen, onCl
             alert('Failed to save profile. Check console for details.');
         }
     }, [localSettings.workflow, localSettings.providers]);
+
+    const handleTestBraveAPI = async () => {
+        const apiKey = (localSettings.braveApiKey || '').trim();
+        const apiUrl = (localSettings.braveSearchUrl || '').trim();
+        
+        console.log('[Brave Test] apiKey length:', apiKey.length, 'apiUrl:', apiUrl);
+        
+        if (!apiKey || !apiUrl) {
+            setBraveTestResult({ 
+                message: `Missing config: ${!apiKey ? 'API key' : 'URL'}`, 
+                success: false 
+            });
+            return;
+        }
+
+        setBraveTestLoading(true);
+        try {
+            const result = await testBraveAPI(apiKey, apiUrl, 'test');
+            console.log('[Brave Test] Result:', result);
+            setBraveTestResult({ 
+                message: result.message, 
+                success: result.success 
+            });
+        } catch (error) {
+            console.error('[Brave Test] Error:', error);
+            setBraveTestResult({ 
+                message: 'Test failed unexpectedly', 
+                success: false 
+            });
+        } finally {
+            setBraveTestLoading(false);
+        }
+    };
+
+    const handleTestLMStudio = async () => {
+        const baseUrl = localSettings.providers.lmstudio.modelApiBaseUrl;
+        
+        if (!baseUrl) {
+            setLmstudioTestResult({ 
+                message: 'Please configure LM Studio base URL first', 
+                success: false 
+            });
+            return;
+        }
+
+        setLmstudioTestLoading(true);
+        try {
+            const result = await testLMStudio(baseUrl);
+            setLmstudioTestResult({ 
+                message: result.message, 
+                success: result.success 
+            });
+        } catch (error) {
+            setLmstudioTestResult({ 
+                message: 'Test failed unexpectedly', 
+                success: false 
+            });
+        } finally {
+            setLmstudioTestLoading(false);
+        }
+    };
+
+    const renderWebSearchConfiguration = () => (
+        <div className="bg-gray-900/60 p-4 rounded-lg border border-purple-700/70 mb-4 min-h-[320px]">
+            <h4 className="font-semibold text-purple-300 mb-3">Web Search Configuration</h4>
+
+            <div className="space-y-3">
+                <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">Search Method</label>
+                    <div className="flex gap-2">
+                        {(['off', 'brave', 'playwright'] as const).map(mode => (
+                            <button
+                                key={mode}
+                                onClick={() => handleGeneralSettingChange('searchMode', mode)}
+                                className={`flex-1 px-2 py-1.5 rounded text-xs font-semibold transition-colors ${
+                                    (localSettings.searchMode === mode || (!localSettings.searchMode && mode === 'off'))
+                                        ? 'bg-purple-600 text-white'
+                                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                                }`}
+                            >
+                                {mode.toUpperCase()}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className={`space-y-2 ${localSettings.searchMode !== 'brave' ? 'opacity-50 pointer-events-none' : ''}`}>
+                    <label className="block text-xs font-medium text-gray-400">Brave Search API URL</label>
+                    <input
+                        type="text"
+                        value={localSettings.braveSearchUrl || ''}
+                        onChange={e => handleGeneralSettingChange('braveSearchUrl', e.target.value)}
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-xs text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                        placeholder="https://api.search.brave.com/res/v1/web/search"
+                    />
+
+                    <label className="block text-xs font-medium text-gray-400">Brave API Key</label>
+                    <input
+                        type="password"
+                        value={localSettings.braveApiKey || ''}
+                        onChange={e => handleGeneralSettingChange('braveApiKey', e.target.value)}
+                        placeholder="Enter Brave API key"
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-xs text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+
+                    <button
+                        onClick={handleTestBraveAPI}
+                        disabled={braveTestLoading}
+                        className="w-full px-3 py-2 bg-purple-700 hover:bg-purple-600 disabled:bg-gray-600 text-white text-xs font-semibold rounded-md transition-colors"
+                    >
+                        {braveTestLoading ? 'Testing...' : 'Test Configuration'}
+                    </button>
+                    {braveTestResult && (
+                        <div className={`p-2 rounded text-xs ${
+                            braveTestResult.success
+                                ? 'bg-green-900/50 text-green-300 border border-green-700'
+                                : 'bg-red-900/50 text-red-300 border border-red-700'
+                        }`}>
+                            {braveTestResult.message}
+                        </div>
+                    )}
+                </div>
+
+                <div className={`space-y-2 ${localSettings.searchMode !== 'playwright' ? 'opacity-50 pointer-events-none' : ''}`}>
+                    <label className="block text-xs font-medium text-gray-400">Playwright Server URL</label>
+                    <input
+                        type="text"
+                        value={localSettings.playwrightSearchUrl || 'http://localhost:3000'}
+                        onChange={e => handleGeneralSettingChange('playwrightSearchUrl', e.target.value)}
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 text-xs text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                        placeholder="http://localhost:3000"
+                    />
+                </div>
+            </div>
+        </div>
+    );
 
     const handleStageChange = (workflowType: 'workflow' | 'backgroundWorkflow', stageId: string, field: string, value: any) => {
         setLocalSettings(prev => {
@@ -510,7 +653,7 @@ internal revision protocol (see § 4).`,
                         <div className="border-t border-gray-700 mt-4">
                             <h3 className="p-3 font-semibold text-gray-300 bg-gray-900/30 border-b border-gray-700">General Background Settings</h3>
                             <div className="p-4 space-y-3">
-                                {/* Keep the SRG settings here if needed, or move them elsewhere */}
+                                {/* SRG settings */}
                                 <div className="bg-gray-900/50 p-3 rounded-lg border border-cyan-700/50">
                                     <h4 className="font-semibold text-cyan-300 mb-2">SRG Knowledge Recall</h4>
                                     <div className="space-y-2 text-sm">
@@ -535,70 +678,91 @@ internal revision protocol (see § 4).`,
                                         </div>
                                     </div>
                                 </div>
+
+                                {/* Web Search Configuration moved to right column */}
                             </div>
                         </div>
 
                     </div>
                     <div className="w-1/3 flex flex-col">
-                        <div className="flex-shrink-0">
-                            <h3 className="p-3 font-semibold text-gray-300 bg-gray-900/30 border-b border-gray-700">Provider Settings</h3>
-                        </div>
-                        <div className="flex-1 p-4 overflow-y-auto space-y-4 text-sm">
-                            <div className="space-y-2">
-                                <label className="font-semibold text-gray-400">Google Gemini</label>
-                                <input type="password" placeholder="API Key (optional override)" value={localSettings.providers.gemini.apiKey || ''} onChange={e => handleProviderDetailChange('gemini', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                <textarea value={localSettings.providers.gemini.identifiers} onChange={e => handleProviderDetailChange('gemini', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                        <div className="flex-1 overflow-y-auto flex flex-col">
+                            {renderWebSearchConfiguration()}
+                            <div className="flex-shrink-0 sticky top-0 z-20 bg-gray-900/30">
+                                <h3 className="p-3 font-semibold text-gray-300 border-b border-gray-700">Provider Settings</h3>
                             </div>
-                            <div className="space-y-2">
-                                <label className="font-semibold text-gray-400">Fireworks AI</label>
-                                <input type="password" placeholder="API Key" value={localSettings.providers.fireworks.apiKey || ''} onChange={e => handleProviderDetailChange('fireworks', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                <textarea value={localSettings.providers.fireworks.identifiers} onChange={e => handleProviderDetailChange('fireworks', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="font-semibold text-gray-400">LM Studio</label>
-                                <div className="flex gap-2">
-                                    <input type="text" placeholder="Model API Base URL" value={localSettings.providers.lmstudio.modelApiBaseUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'modelApiBaseUrl', e.target.value)} className="flex-1 bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                    <button
-                                        onClick={async () => {
-                                            let baseUrl = localSettings.providers.lmstudio.modelApiBaseUrl || 'http://localhost:1234';
-                                            baseUrl = baseUrl.replace(/\/v1\/?$/, '').replace(/\/chat\/completions\/?$/, '');
-                                            try {
-                                                const res = await fetch(`${baseUrl}/v1/models`);
-                                                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-                                                const json = await res.json();
-                                                const models = json.data || json.models || [];
-                                                const ids = models.map((m: any) => m.id).filter(Boolean);
-                                                if (ids.length > 0) {
-                                                    handleProviderDetailChange('lmstudio', 'identifiers', ids.join('\n'));
-                                                    alert(`Successfully fetched ${ids.length} models from LM Studio.`);
-                                                } else {
-                                                    alert('Connected to LM Studio, but no models are currently loaded.');
-                                                }
-                                            } catch (err: any) {
-                                                console.error('Failed to fetch models from LM studio:', err);
-                                                alert(`Failed to connect to LM Studio at ${baseUrl}. Is the local server running?`);
-                                            }
-                                        }}
-                                        className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-xs font-semibold whitespace-nowrap"
-                                        title="Fetch models currently loaded in LM Studio"
-                                    >
-                                        Fetch Models
-                                    </button>
+                            <div className="p-4 space-y-4 text-sm">
+                                <div className="space-y-2">
+                                    <label className="font-semibold text-gray-400">Google Gemini</label>
+                                    <input type="password" placeholder="API Key (optional override)" value={localSettings.providers.gemini.apiKey || ''} onChange={e => handleProviderDetailChange('gemini', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                    <textarea value={localSettings.providers.gemini.identifiers} onChange={e => handleProviderDetailChange('gemini', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
                                 </div>
-                                <input type="text" placeholder="Web Search API URL" value={localSettings.providers.lmstudio.webSearchApiUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'webSearchApiUrl', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                <textarea value={localSettings.providers.lmstudio.identifiers} onChange={e => handleProviderDetailChange('lmstudio', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                                <div className="space-y-2">
+                                    <label className="font-semibold text-gray-400">Fireworks AI</label>
+                                    <input type="password" placeholder="API Key" value={localSettings.providers.fireworks.apiKey || ''} onChange={e => handleProviderDetailChange('fireworks', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                    <textarea value={localSettings.providers.fireworks.identifiers} onChange={e => handleProviderDetailChange('fireworks', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="font-semibold text-gray-400">LM Studio</label>
+                                    <div className="flex gap-2">
+                                        <input type="text" placeholder="Model API Base URL" value={localSettings.providers.lmstudio.modelApiBaseUrl || ''} onChange={e => handleProviderDetailChange('lmstudio', 'modelApiBaseUrl', e.target.value)} className="flex-1 bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                        <button
+                                            onClick={handleTestLMStudio}
+                                            disabled={lmstudioTestLoading}
+                                            className="px-3 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white rounded-md text-xs font-semibold whitespace-nowrap"
+                                            title="Test LM Studio connection"
+                                        >
+                                            {lmstudioTestLoading ? 'Testing...' : 'Test'}
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                let baseUrl = localSettings.providers.lmstudio.modelApiBaseUrl || 'http://localhost:1234';
+                                                baseUrl = baseUrl.replace(/\/v1\/?$/, '').replace(/\/chat\/completions\/?$/, '');
+                                                try {
+                                                    const res = await fetch(`${baseUrl}/v1/models`);
+                                                    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                                                    const json = await res.json();
+                                                    const models = json.data || json.models || [];
+                                                    const ids = models.map((m: any) => m.id).filter(Boolean);
+                                                    if (ids.length > 0) {
+                                                        handleProviderDetailChange('lmstudio', 'identifiers', ids.join('\n'));
+                                                        alert(`Successfully fetched ${ids.length} models from LM Studio.`);
+                                                    } else {
+                                                        alert('Connected to LM Studio, but no models are currently loaded.');
+                                                    }
+                                                } catch (err: any) {
+                                                    console.error('Failed to fetch models from LM studio:', err);
+                                                    alert(`Failed to connect to LM Studio at ${baseUrl}. Is the local server running?`);
+                                                }
+                                            }}
+                                            className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-xs font-semibold whitespace-nowrap"
+                                            title="Fetch models currently loaded in LM Studio"
+                                        >
+                                            Fetch Models
+                                        </button>
+                                    </div>
+                                    {lmstudioTestResult && (
+                                        <div className={`p-2 rounded text-xs ${
+                                            lmstudioTestResult.success 
+                                                ? 'bg-green-900/50 text-green-300 border border-green-700' 
+                                                : 'bg-red-900/50 text-red-300 border border-red-700'
+                                        }`}>
+                                            {lmstudioTestResult.message}
+                                        </div>
+                                    )}
+                                    <textarea value={localSettings.providers.lmstudio.identifiers} onChange={e => handleProviderDetailChange('lmstudio', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="font-semibold text-gray-400">Perplexity</label>
+                                    <input type="password" placeholder="API Key" value={localSettings.providers?.perplexity?.apiKey || ''} onChange={e => handleProviderDetailChange('perplexity', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                    <textarea value={localSettings.providers?.perplexity?.identifiers || ''} onChange={e => handleProviderDetailChange('perplexity', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="font-semibold text-gray-400">Grok</label>
+                                    <input type="password" placeholder="API Key" value={localSettings.providers?.grok?.apiKey || ''} onChange={e => handleProviderDetailChange('grok', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                                    <textarea value={localSettings.providers?.grok?.identifiers || ''} onChange={e => handleProviderDetailChange('grok', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
+                                </div>
                             </div>
-                            <div className="space-y-2">
-                                <label className="font-semibold text-gray-400">Perplexity</label>
-                                <input type="password" placeholder="API Key" value={localSettings.providers?.perplexity?.apiKey || ''} onChange={e => handleProviderDetailChange('perplexity', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                <textarea value={localSettings.providers?.perplexity?.identifiers || ''} onChange={e => handleProviderDetailChange('perplexity', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="font-semibold text-gray-400">Grok</label>
-                                <input type="password" placeholder="API Key" value={localSettings.providers?.grok?.apiKey || ''} onChange={e => handleProviderDetailChange('grok', 'apiKey', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
-                                <textarea value={localSettings.providers?.grok?.identifiers || ''} onChange={e => handleProviderDetailChange('grok', 'identifiers', e.target.value)} rows={2} placeholder="One model ID per line" className="w-full bg-gray-700 border border-gray-600 rounded-md p-2 text-sm text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none resize-y" />
-                            </div>
-                            <div className="border-t border-gray-700 pt-4 mt-4 space-y-4">
+                            <div className="border-t border-gray-700 pt-4 mt-4 space-y-4 p-4">
                                 <h3 className="font-semibold text-gray-300">Background Agent Settings</h3>
                                 <div className="p-3 bg-gray-900/50 rounded-md space-y-2">
                                     <h4 className="font-semibold text-gray-400 text-xs uppercase">General</h4>
@@ -638,7 +802,7 @@ internal revision protocol (see § 4).`,
                                                 <select value={roleSetting.selectedModel} onChange={e => handleRoleSettingChange(role, 'selectedModel', e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-1.5 text-xs text-white focus:ring-2 focus:ring-cyan-500 focus:outline-none">
                                                     {localSettings.providers[roleSetting.provider].identifiers.split('\n').map(m => m.trim()).filter(Boolean).map(model => <option key={model} value={model}>{model}</option>)}
                                                 </select>
-                                            </div>
+                                            </div>  
                                         </div>
                                     );
                                 })}

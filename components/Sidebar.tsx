@@ -241,7 +241,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <NetworkIcon />
                     </button>
-                    {onShowImportHistory && (
+                    {/* Calibration button temporarily hidden */}
+                    {/* {onShowImportHistory && (
                         <button
                             onClick={onShowImportHistory}
                             title="Calibration"
@@ -250,7 +251,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         >
                             <ScalesIcon />
                         </button>
-                    )}
+                    )} */}
                     <button
                         onClick={onShowLogs}
                         title="Show Logs"
@@ -265,13 +266,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <GlobeIcon />
                     </button>
-                    <button
+                    {/* Memory Crystal button temporarily hidden */}
+                    {/* <button
                         onClick={onShowCrystal}
                         title={isCrystalPanelVisible ? "Hide Memory Crystal" : "Show Memory Crystal"}
                         className={`p-2 rounded-md transition-colors ${isCrystalPanelVisible ? 'bg-cyan-900/50 text-cyan-400' : 'text-gray-400 hover:text-cyan-400 hover:bg-gray-800'}`}
                     >
                         <CrystalIcon />
-                    </button>
+                    </button> */}
                 </div>
             </header>
 

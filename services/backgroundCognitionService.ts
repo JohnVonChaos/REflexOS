@@ -1,7 +1,7 @@
 
 
 // FIX: Update import to use RoleSetting and context packets
-import type { MemoryAtom, BackgroundInsight, AISettings, ProjectFile, RunningContextBuffer, RoleSetting, WorkflowStage } from '../types';
+import type { MemoryAtom, BackgroundInsight, AISettings, ProjectFile, RunningContextBuffer, RoleSetting, WorkflowStage, ChainedInsight, InsightChain } from '../types';
 import { generateText, performWebSearch, sendMessageToGemini, BACKGROUND_COGNITION_PROMPT, SUBCONSCIOUS_PROMPT, CONSCIOUS_PROMPT } from './geminiService';
 import { getDefaultSettings } from '../types';
 import { loggingService } from './loggingService';
@@ -16,6 +16,8 @@ import { contextDiffer } from './contextDiffer';
 import { scratchpadService } from './scratchpad';
 import type { DistilledInsight } from '../types/dualProcess';
 import { codingAgentTool } from './codingAgentTool';
+import { workOrderService } from './workOrderService';
+import { fuzzyCommandCaptureService } from './fuzzyCommandCaptureService';
 
 interface FullCognitionContext {
   messages: MemoryAtom[];
@@ -25,6 +27,255 @@ interface FullCognitionContext {
   rcb?: RunningContextBuffer;
   // Add workflow context packets
   baseContextPackets?: Record<string, string>;
+}
+
+// --- CHAINED RESEARCH CYCLE PROMPTS ---
+
+const L1_ORIENTATION_SYSTEM_PROMPT = `You are L1. Orientation Phase. Read the research chain and narrate what we know.
+
+Do NOT suggest queries. Do NOT make decisions. Just read and narrate.
+
+Output this structure:
+
+CHAIN START: What triggered this research thread.
+
+DISCOVERIES: What each insight added, how they relate to each other.
+
+CURRENT POSITION: We are at insight #N. This is the most recent finding.
+
+GAPS & UNKNOWNS: What questions remain open. What contradictions exist.
+
+TRAJECTORY: Where is this heading. Is this thread still relevant.
+
+ASSESSMENT: One of — Sufficient | Growing | Stalled | Diverging`;
+
+const L2_DECISION_SYSTEM_PROMPT = `You are L2. Decision Phase. Read L1's orientation and decide what happens next.
+
+Choose ONE:
+- "search" — a specific gap exists and a search would advance the thread
+- "wait" — we have enough for now
+- "close" — this thread is exhausted or irrelevant
+
+If decision is "search", formulate ONE specific targeted query that advances the thread.
+Never repeat a prior query from the chain.
+Never ask a vague or broad question.
+
+Output this structure:
+
+DECISION: search | wait | close
+
+REASONING: Why this decision is correct right now.
+
+NEXT QUERY: "the exact query string" (only if decision is search)
+
+QUERY RATIONALE: Which gap this addresses and which prior insight it builds on.`;
+
+const L2_VALIDATION_SYSTEM_PROMPT = `You are L2. Validation Phase. Compare search results against the existing chain.
+
+Ask three questions:
+1. Is this NEW? Not already covered by prior insights?
+2. Does it ADVANCE the thread? Does it address the gap that triggered the search?
+3. Is it RELIABLE? Credible sources, adequate detail?
+
+APPROVE if all three are yes.
+REJECT if any are no.
+
+Output this structure:
+
+VALIDATION DECISION: approve | reject
+
+REASONING: Why.
+
+IF APPROVED:
+Relationship Type: extends | refines | contradicts | deepens | branches | closes
+Approved Insight: 2-3 sentence summary of what to store.
+
+IF REJECTED:
+Rejection Category: duplicate | tangential | insufficient | contradictory | noise
+Rejection Reason: One clear sentence.`;
+
+// --- HELPER FUNCTIONS FOR CHAINED RESEARCH CYCLE ---
+
+function buildL1OrientationPrompt(chain: InsightChain, context: FullCognitionContext): string {
+  const insightsSummary = chain.insights.length === 0
+    ? '(No insights yet — this is the first pass)'
+    : chain.insights.map((insight, idx) => `
+Insight #${idx}:
+  Query: "${insight.query}"
+  Found: ${insight.insight.substring(0, 300)}
+  Relation: ${insight.relationshipType || 'first'}
+  Timestamp: ${new Date(insight.timestamp).toLocaleString()}
+`).join('\n---\n');
+
+  return `
+CHAIN ID: ${chain.chainId}
+INITIAL GAP: ${chain.initialGap}
+
+RESEARCH CHAIN SO FAR:
+${insightsSummary}
+
+CURRENT SESSION:
+Mission: ${context.rcb?.current_mission_state || 'Not set'}
+Focus: ${context.rcb?.conscious_focal_points?.join(', ') || 'Not set'}
+
+Read this chain and produce an orientation narrative.
+`;
+}
+
+function buildL2DecisionPrompt(l1Narrative: string, chain: InsightChain, context: FullCognitionContext): string {
+  const priorQueries = chain.insights.map(i => `"${i.query}"`).join(', ');
+  return `
+CHAIN ID: ${chain.chainId}
+POSITION: Insight #${chain.insights.length}
+
+L1 ORIENTATION:
+${l1Narrative}
+
+PRIOR QUERIES ALREADY RUN (do not repeat):
+${priorQueries || 'None yet'}
+
+CURRENT SESSION:
+${context.rcb?.current_mission_state || 'Not set'}
+
+Decide: search, wait, or close. If search, formulate one specific query.
+`;
+}
+
+function buildL2ValidationPrompt(query: string, searchResults: any, priorInsights: ChainedInsight[]): string {
+  const priorSummary = priorInsights
+    .map((i, idx) => `#${idx}: "${i.query}" → ${i.insight.substring(0, 150)}`)
+    .join('\n');
+
+  return `
+SEARCH QUERY: "${query}"
+
+SEARCH RESULT:
+${searchResults.text.substring(0, 2000)}
+
+PRIOR INSIGHTS IN THIS CHAIN:
+${priorSummary || 'None'}
+
+Validate: is this new, does it advance the thread, is it reliable?
+Approve or reject.
+`;
+}
+
+function parseL2Decision(output: string): {
+  decision: 'search' | 'wait' | 'close';
+  reasoning: string;
+  nextQuery?: string;
+  queryRationale?: string;
+} {
+  const decisionMatch = output.match(/DECISION:\s*(search|wait|close)/i);
+  const queryMatch = output.match(/NEXT QUERY:\s*"([^"]+)"/i);
+  const rationaleMatch = output.match(/QUERY RATIONALE:\s*([^\n]+)/i);
+  const reasoningMatch = output.match(/REASONING:\s*([\s\S]*?)(?:NEXT QUERY|QUERY RATIONALE|$)/i);
+
+  return {
+    decision: (decisionMatch?.[1]?.toLowerCase() || 'wait') as 'search' | 'wait' | 'close',
+    reasoning: reasoningMatch?.[1]?.trim() || '',
+    nextQuery: queryMatch?.[1],
+    queryRationale: rationaleMatch?.[1]?.trim(),
+  };
+}
+
+function parseL2Validation(output: string): {
+  decision: 'approve' | 'reject';
+  relationshipType?: string;
+  approvedInsight: string;
+  rejectionCategory?: string;
+  rejectionReason?: string;
+} {
+  const decisionMatch = output.match(/VALIDATION DECISION:\s*(approve|reject)/i);
+  const relationMatch = output.match(/Relationship Type:\s*([^\n]+)/i);
+  const insightMatch = output.match(/Approved Insight:\s*([\s\S]*?)(?:IF REJECTED|$)/i);
+  const categoryMatch = output.match(/Rejection Category:\s*([^\n]+)/i);
+  const reasonMatch = output.match(/Rejection Reason:\s*([^\n]+)/i);
+
+  return {
+    decision: (decisionMatch?.[1]?.toLowerCase() || 'reject') as 'approve' | 'reject',
+    relationshipType: relationMatch?.[1]?.trim(),
+    approvedInsight: insightMatch?.[1]?.trim() || '',
+    rejectionCategory: categoryMatch?.[1]?.trim(),
+    rejectionReason: reasonMatch?.[1]?.trim(),
+  };
+}
+
+function createNewInsightChain(gap: string): InsightChain {
+  return {
+    chainId: generateUUID(),
+    createdAt: Date.now(),
+    lastUpdatedAt: Date.now(),
+    initialGap: gap,
+    insights: [],
+    status: 'active',
+    trajectory: `Investigating: ${gap}`,
+    knownFindings: [],
+    openQuestions: [gap],
+  };
+}
+
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+interface FullCognitionContext {
+  messages: MemoryAtom[];
+  projectFiles: ProjectFile[];
+  contextFileNames: string[];
+  selfNarrative?: string;
+  rcb?: RunningContextBuffer;
+  // Add workflow context packets
+  baseContextPackets?: Record<string, string>;
+}
+
+/**
+ * Handle malformed search command from layer output
+ * Forward to fallback model for execution and return result as if it worked
+ */
+async function handleMalformedSearchCommand(
+  layerOutput: string,
+  failedQuery: string,
+  roleSetting: RoleSetting,
+  providers: AISettings['providers'],
+  currentProvider: string
+): Promise<string | null> {
+  try {
+    // Find a different model to execute the search
+    const allModels = Object.values(providers).flatMap(p => p.modelApiBaseUrl ? [p.identifiers] : []);
+    const fallbackProvider = allModels.find(m => m !== currentProvider);
+    
+    if (!fallbackProvider) {
+      loggingService.log('WARN', '[SEARCH REDIRECT] No fallback model available');
+      return null;
+    }
+
+    loggingService.log('INFO', `[SEARCH REDIRECT] Forwarding malformed search to fallback model`, {
+      original: failedQuery,
+      fallback: fallbackProvider,
+    });
+
+    // Build redirection prompt
+    const redirectPrompt = fuzzyCommandCaptureService.buildSearchRedirectionPrompt(layerOutput, failedQuery);
+    
+    // Execute with fallback
+    const result = await generateText(
+      redirectPrompt,
+      'Execute this search query and return a brief summary of findings.',
+      roleSetting,
+      providers
+    );
+
+    loggingService.log('INFO', '[SEARCH REDIRECT] Success', { resultLength: result.length });
+    return result;
+  } catch (e) {
+    loggingService.log('ERROR', '[SEARCH REDIRECT] Failed', { error: String(e) });
+    return null;
+  }
 }
 
 class BackgroundCognitionService {
@@ -46,6 +297,137 @@ class BackgroundCognitionService {
    * traceability and debugging. Per-workflow stages can opt-out to run the
    * "independent" mode which runs synthesis only.
    */
+
+  async runChainedResearchCycle(
+    insightChain: InsightChain,
+    context: FullCognitionContext,
+    roleSetting: RoleSetting,
+    providers: AISettings['providers']
+  ): Promise<{ insightStored: boolean; storedInsight?: ChainedInsight; cycleLog: string[] }> {
+
+    const cycleLog: string[] = [];
+
+    // STAGE 1: L1 ORIENTATION
+    // Build prompt with full chain history and conversation context
+    const l1UserPrompt = buildL1OrientationPrompt(insightChain, context);
+    const l1Output = await generateText(l1UserPrompt, L1_ORIENTATION_SYSTEM_PROMPT, roleSetting, providers);
+    cycleLog.push(`L1 orientation complete (${l1Output.length} chars)`);
+
+    // STAGE 2: L2 DECISION
+    const l2DecisionPrompt = buildL2DecisionPrompt(l1Output, insightChain, context);
+    const l2Output = await generateText(l2DecisionPrompt, L2_DECISION_SYSTEM_PROMPT, roleSetting, providers);
+    
+    // Fuzzy command capture: scan for any work order or search commands in L2 output
+    const fuzzyCommands = fuzzyCommandCaptureService.extractAllCommands(l2Output);
+    if (fuzzyCommands.length > 0) {
+      for (const cmd of fuzzyCommands) {
+        if (cmd.type === 'work_order' && cmd.payload?.title) {
+          const workOrder = workOrderService.createWorkOrder(
+            cmd.payload.title,
+            cmd.payload.description || '',
+            'l2_decision'
+          );
+          cycleLog.push(`Work order captured: ${workOrder.id}`);
+        }
+      }
+    }
+
+    const l2Decision = parseL2Decision(l2Output);
+    cycleLog.push(`L2 decision: ${l2Decision.decision}`);
+
+    if (l2Decision.decision === 'close') {
+      insightChain.status = 'closed';
+      cycleLog.push('Chain closed.');
+      return { insightStored: false, cycleLog };
+    }
+
+    if (l2Decision.decision === 'wait') {
+      insightChain.status = 'paused';
+      cycleLog.push('Chain paused.');
+      return { insightStored: false, cycleLog };
+    }
+
+    if (l2Decision.decision !== 'search' || !l2Decision.nextQuery) {
+      cycleLog.push('No search warranted this cycle.');
+      return { insightStored: false, cycleLog };
+    }
+
+    // STAGE 3: SEARCH
+    cycleLog.push(`Searching: "${l2Decision.nextQuery}"`);
+    
+    // Check for malformed search commands in L2 output
+    let searchResults = await performWebSearch(l2Decision.nextQuery, roleSetting, providers);
+    
+    if (!searchResults || !searchResults.text || searchResults.text.length < 50) {
+      // Search might have failed due to malformed command
+      const hasMalformed = fuzzyCommandCaptureService.hasMalformedSearchCommand(l2Output);
+      if (hasMalformed) {
+        loggingService.log('WARN', `[CHAIN] Search appears malformed, attempting redirect`);
+        cycleLog.push('Search malformed, attempting redirect...');
+        
+        const redirectResult = await handleMalformedSearchCommand(
+          l2Output,
+          l2Decision.nextQuery,
+          roleSetting,
+          providers,
+          roleSetting.provider
+        );
+        
+        if (redirectResult) {
+          searchResults = {
+            text: redirectResult,
+            sources: [{ web: { uri: 'fallback_model', title: 'Fallback Execution' } }],
+          };
+          cycleLog.push(`Redirect successful: ${redirectResult.length} chars`);
+        }
+      }
+    }
+    
+    cycleLog.push(`Search returned ${searchResults.text.length} chars`);
+
+    // STAGE 4: L2 VALIDATION
+    const l2ValidatePrompt = buildL2ValidationPrompt(l2Decision.nextQuery, searchResults, insightChain.insights);
+    const l2ValidateOutput = await generateText(l2ValidatePrompt, L2_VALIDATION_SYSTEM_PROMPT, roleSetting, providers);
+    const validation = parseL2Validation(l2ValidateOutput);
+    cycleLog.push(`L2 validation: ${validation.decision}`);
+
+    if (validation.decision === 'reject') {
+      loggingService.log('INFO', `[CHAIN ${insightChain.chainId}] Search rejected: ${validation.rejectionCategory} — ${validation.rejectionReason}`);
+      cycleLog.push(`Rejected: ${validation.rejectionCategory}`);
+      return { insightStored: false, cycleLog };
+    }
+
+    // STAGE 5: STORE
+    const previousInsight = insightChain.insights[insightChain.insights.length - 1];
+    const newInsight: ChainedInsight = {
+      insightId: generateUUID(),
+      chainId: insightChain.chainId,
+      positionInChain: insightChain.insights.length,
+      extendsInsightId: previousInsight?.insightId || null,
+      relationshipType: validation.relationshipType as 'extends' | 'refines' | 'contradicts' | 'deepens' | 'branches' | 'closes' | undefined,
+      queryRationale: l2Decision.queryRationale,
+      validationStatus: 'approved',
+      orientationNarrative: l1Output,
+      evaluationNotes: l2Decision.reasoning,
+      query: l2Decision.nextQuery,
+      insight: validation.approvedInsight,
+      sources: searchResults.sources || [],
+      timestamp: Date.now(),
+    };
+
+    if (previousInsight) {
+      previousInsight.nextInsightId = newInsight.insightId;
+    }
+
+    insightChain.insights.push(newInsight);
+    insightChain.status = 'active';
+    insightChain.lastUpdatedAt = Date.now();
+    insightChain.knownFindings.push(validation.approvedInsight);
+
+    cycleLog.push(`Insight stored: ${newInsight.insightId}`);
+    return { insightStored: true, storedInsight: newInsight, cycleLog };
+  }
+
   async runWebSearchCycle(
     context: FullCognitionContext,
     roleSetting: RoleSetting,
@@ -640,6 +1022,8 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
     loggingService.log('INFO', '[CODE MAINTENANCE] Starting coding agent cycle...');
     await scratchpadService.append('SYSTEM', `🚀 CODE MAINTENANCE: Starting task proposal for "${workflowStage.name}"`, 'RESEARCH', 'LOW');
     
+    let workOrder: any = null; // Will be set during task execution
+    
     try {
       // Step 1: Ask the LLM to propose a task (with re-invoke research loop)
       await scratchpadService.append('SYSTEM', '📋 Phase 1: Asking LLM to propose coding task...', 'THOUGHT', 'LOW');
@@ -691,6 +1075,10 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
         return [];
       }
 
+      // ─── CREATE WORK ORDER ───
+      const workOrder = workOrderService.createWorkOrder(spec.name, spec.goal, 'code_maintenance');
+      workOrderService.setActive(workOrder.id, 0);
+
       // Step 3: Attach project files that live under the proposed cwd
       const cwd = spec.cwd.replace(/\\/g, '/');
       spec.files = (context.projectFiles ?? [])
@@ -735,27 +1123,27 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
       const result = finalResult!;
 
       if (!result.success) {
-          // Total failure autopsy
-          const autopsyCrystal = `[COMPLETE AUTOPSY]\nTask: ${spec.name}\nAll ${fallbackModels.length} models failed in escalation ladder.\n\n=== CRYSTALS ===\n${failedCrystals.join('\n---\n')}`;
-          await scratchpadService.append('SYSTEM', `💀 TOTAL EXHAUSTION. Complete Autopsy Crystal Generated:\n${autopsyCrystal.slice(0, 300)}...`, 'OBSERVE', 'HIGH');
+          // Ralph (coding agent) rejects this work order
+          // Route back to L2 for reframing instead of immediate failure
+          const rejectionReason = `Model escalation failed: ${result.error || 'Unknown error'}. Suggest breaking into smaller tasks or different approach.`;
+          workOrderService.setRejected(workOrder.id, rejectionReason);
+
+          loggingService.log('WARN', `[CODE MAINTENANCE] Task rejected by Ralph (escalation failed)`, { 
+              taskId: workOrder.id,
+              reason: rejectionReason 
+          });
+          await scratchpadService.append('SYSTEM', `⚠️ REJECTION: Ralph cannot resolve this task.\nReason: ${rejectionReason}\nWork order marked for L2 reframing.`, 'OBSERVE', 'HIGH');
           
-          // Emit to memory so it reverts to research list
-          const atom: MemoryAtom = {
-              uuid: `coding-failure-${result.taskId}`,
-              type: 'steward_note',
-              role: 'model',
-              text: `Coding task "${spec.name}" completely failed. Reverting to research list.\n\n${autopsyCrystal}`,
-              timestamp: Date.now(),
-              isInContext: true,
-              isCollapsed: false,
-          };
-          srgService.ingestHybrid(`Coding task "${spec.name}" failed to converge using all models. Escalation exhausted.`);
-          return [atom];
+          // Return empty for now - L2 will see the rejected order and reframe
+          return [];
       }
       
       // Log the successful result to scratchpad
       const statusText = 'SUCCESS';
       await scratchpadService.append('SYSTEM', `✅ CODE MAINTENANCE: ${statusText}\nTask: ${spec.name}\nDuration: ${result.duration_ms}ms\nIterations: ${result.iterationCount}`, 'EDIT', 'LOW');
+
+      // ─── MARK WORK ORDER COMPLETED ───
+      workOrderService.setCompleted(workOrder.id);
 
       // Step 5: Import into memory
       const atom = await codingAgentTool.importTaskResult(result);
@@ -770,12 +1158,19 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
     } catch (err) {
       loggingService.log('ERROR', '[CODE MAINTENANCE] Cycle failed', { error: err });
       await scratchpadService.append('SYSTEM', `💥 CODE MAINTENANCE FAILED: ${err}`, 'OBSERVE', 'HIGH');
+      // Mark work order as unresolved on exception
+      if (workOrder) {
+        workOrderService.setUnresolved(workOrder.id, String(err));
+      }
       return [];
     }
   }
 }
 
 export const backgroundCognitionService = new BackgroundCognitionService();
+
+// Export helper functions for use in useChat.ts
+export { createNewInsightChain, generateUUID };
 
 export async function runWebResearchCycle(
   topic: string

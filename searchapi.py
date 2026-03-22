@@ -29,7 +29,7 @@ class SearchQuery(BaseModel):
 
 
 # Replace with your Brave Search API key
-BRAVE_API_KEY = "BSAf9Suu35VdwpSVFlXcE4rf-KKbxuV"
+BRAVE_API_KEY = "BSArFXrDChW-vitat8QfjrWYKLQ_xxe"
 
 
 # --- Helper Functions ---
@@ -107,17 +107,14 @@ def brave_search(query: str, num_results: int = 25):
     url = "https://api.search.brave.com/res/v1/web/search"
     
     headers = {
+        "Accept": "application/json",
         "X-Subscription-Token": BRAVE_API_KEY,
-        "Accept": "application/json"
+        "Cache-Control": "no-cache"
     }
     
     params = {
         "q": query,
-        "count": num_results,
-        "country": "us",
-        "search_lang": "en",
-        "safesearch": "moderate",
-        "text_decorations": False
+        "count": 10
     }
     
     try:

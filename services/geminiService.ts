@@ -335,64 +335,90 @@ export interface WebSearchResult {
 
 // FIX: Updated signature to accept AISettings to get playwrightSearchUrl
 export const performWebSearch = async (query: string, roleSetting: RoleSetting, providers: AISettings['providers'], aiSettings?: AISettings): Promise<WebSearchResult | null> => {
-    const provider = roleSetting.provider;
-    loggingService.log('INFO', '🔍 WEB SEARCH INITIATED', { query, provider });
-    console.log('[performWebSearch] Starting search for:', query, 'Provider:', provider);
+    loggingService.log('INFO', '🔍 WEB SEARCH INITIATED', { query, searchMode: aiSettings?.searchMode });
+    console.log('[performWebSearch] Starting search for:', query, 'SearchMode:', aiSettings?.searchMode);
     
     try {
-        if (provider === 'gemini') {
-            loggingService.log('INFO', '🔍 Using Gemini with googleSearch tool');
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: [{ role: 'user', parts: [{ text: query }] }],
-                config: {
-                    tools: [{ googleSearch: {} }],
-                },
-            });
+        // Check search mode configuration
+        const userSearchMode = aiSettings?.searchMode || 'brave';
+        let searchModeResolved: 'brave' | 'playwright' = 'brave';
 
-            const insightText = response.text;
-            const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-
-            const sources = groundingChunks
-                .filter((chunk): chunk is { web: { uri: string; title: string } } =>
-                    !!chunk && !!chunk.web?.uri
-                )
-                .map(chunk => ({ web: { uri: chunk.web.uri, title: chunk.web.title || chunk.web.uri } }));
-
-            loggingService.log('INFO', '✅ Gemini search completed', { resultLength: insightText.length, sources: sources.length });
-            return { text: insightText, sources };
-
+        if (userSearchMode === 'playwright') {
+            searchModeResolved = 'playwright';
+        } else {
+            // treat 'off' or any other value as brave fallback
+            if (userSearchMode === 'off') {
+                loggingService.log('WARN', '🔍 Web search was set to OFF. Forcing Brave mode for continuity.');
+            }
+            searchModeResolved = 'brave';
         }
-        else {
-            loggingService.log('INFO', `🔍 Using ${provider} provider`);
-            // Check if current provider has webSearchApiUrl configured
-            const providerSettings = providers[provider];
-            if (!providerSettings) {
-                throw new Error(`Provider '${provider}' not found in settings`);
+
+        loggingService.log('INFO', `🔍 Web search mode resolved to ${searchModeResolved.toUpperCase()}.`);
+
+        if (searchModeResolved === 'brave') {
+            loggingService.log('INFO', '🔍 Using Brave Search API (via local proxy)');
+            const braveApiUrl = aiSettings?.braveSearchUrl || 'https://api.search.brave.com/res/v1/web/search';
+            const braveApiKey = aiSettings?.braveApiKey;
+
+            if (!braveApiKey) {
+                loggingService.log('ERROR', 'Brave API key not configured in settings');
+                throw new Error('Brave API key is not configured. Please set it in the Background Cognition modal.');
             }
-            if (!providerSettings.webSearchApiUrl) {
-                throw new Error(`Provider '${provider}' has no webSearchApiUrl configured`);
-            }
-            
-            const searchEndpoint = `${providerSettings.webSearchApiUrl.replace(/\/+$/, '')}/websearch`;
-            loggingService.log('INFO', `🔍 Calling web search endpoint: ${searchEndpoint}`);
-            
-            const response = await fetch(searchEndpoint, {
+
+            // Route through the local browserServer proxy — browser JS cannot call
+            // api.search.brave.com directly due to CORS. The proxy runs server-side
+            // (Node.js / Express) and has no such restriction.
+            const proxyUrl = 'http://localhost:3005/brave-search';
+            const response = await fetch(proxyUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query }),
+                body: JSON.stringify({ apiKey: braveApiKey, apiUrl: braveApiUrl, query }),
             });
 
             if (!response.ok) {
-                throw new Error(`Search endpoint error: ${response.status} ${response.statusText}`);
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(`Brave search error: ${response.status} ${response.statusText} — ${errData?.message || ''}`);
             }
 
-            const result = await response.json();
-            loggingService.log('INFO', '✅ Web search completed', { resultLength: result?.text?.length || 0 });
-            
-            return result || null;
+            const proxyResult = await response.json();
+            const result = proxyResult.data;  // raw Brave API payload forwarded by proxy
+            loggingService.log('INFO', '✅ Brave search completed', { resultLength: JSON.stringify(result).length });
+
+            // Transform Brave API response to WebSearchResult format
+            const sources = (result?.web?.results || [])
+                .map((r: any) => ({ web: { uri: r.url || '', title: r.title || 'Untitled' } }));
+            const text = result?.web?.results?.map((r: any) => `${r.title}: ${r.url}\n${r.description || ''}`).join('\n') || '';
+
+            return { text, sources };
         }
+
+        if (searchModeResolved === 'playwright') {
+            loggingService.log('INFO', '🔍 Using Playwright Search Server');
+            const playwrightUrl = aiSettings?.playwrightSearchUrl || 'http://localhost:3000';
+            
+            try {
+                const response = await fetch(`${playwrightUrl}/api/search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, maxResults: 5 }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Playwright search error: ${response.status} ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                loggingService.log('INFO', '✅ Playwright search completed', { resultLength: result?.text?.length || 0 });
+                
+                return result || null;
+            } catch (playwrightError: any) {
+                loggingService.log('ERROR', '❌ Playwright search failed', { error: playwrightError.message, url: playwrightUrl });
+                throw playwrightError;
+            }
+        }
+
+        loggingService.log('ERROR', '🔍 Invalid search mode', { searchMode: searchModeResolved });
+        throw new Error(`Invalid search mode: ${searchModeResolved}. Please configure search settings in Background Cognition modal.`);
     } catch (error: any) {
         loggingService.log('ERROR', '❌ WEB SEARCH FAILED', { error: error.message, stack: error.stack });
         console.error('[performWebSearch] ERROR:', error);

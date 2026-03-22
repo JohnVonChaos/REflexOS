@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import type { MemoryAtom, GeneratedFile, ProjectFile, SessionState, BackgroundInsight, AISettings, RoleSetting, RunningContextBuffer, SRGSettings, WorkflowStage } from '../types';
+﻿import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import type { MemoryAtom, GeneratedFile, ProjectFile, SessionState, BackgroundInsight, AISettings, RoleSetting, RunningContextBuffer, SRGSettings, WorkflowStage, ChainedInsight, InsightChain } from '../types';
 import { getDefaultSettings, ALL_COGNITIVE_ROLES, CONTEXT_PACKET_LABELS, ALL_CONTEXT_PACKETS } from '../types';
 import { sessionService } from '../services/sessionService';
 import { recallWeaverService } from '../services/recallWeaverService';
 import { sendMessageToGemini, generateText, integrateNarrative, performWebSearch } from '../services/geminiService';
 import { contextService } from '../services/contextService';
-import { backgroundCognitionService } from '../services/backgroundCognitionService';
+import { backgroundCognitionService, createNewInsightChain, generateUUID as generateUUIDFromService } from '../services/backgroundCognitionService';
 import { rcbService, calculateRcbSize } from '../services/rcbService';
 import { extractCodeBlocksFromText } from '../services/codeBlockParser';
 import { loggingService } from '../services/loggingService';
@@ -22,7 +22,6 @@ const mapStrengthToTurns = (strength: number): number => {
     if (strength < fibMap.length) return fibMap[strength];
     return fibMap[fibMap.length-1]; // Default to max if out of bounds
 };
-
 // --- Fibonacci Decay Logic ---
 const fibCache = new Map<number, number>();
 function fibonacci(n: number): number {
@@ -618,45 +617,70 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 CORE_NARRATIVE: selfNarrativeRef.current || 'None.',
             };
 
-            const insight = await backgroundCognitionService.runWebSearchCycle({
-                messages: currentMessages,
+            // Derive gap directly from RCB mission state or recent conversation — no longer
+            // gated behind runWebSearchCycle which was blocking the chain from ever starting.
+            const rcb = rcbRef.current;
+            const detectedGap: string = (rcb as any)?.current_mission_state
+                || (rcb as any)?.activeGap
+                || recentHistory.map(m => m.text).join(' ').slice(0, 120)
+                || 'general research gap';
+
+            // Avoid running if detected gap is a known recent query
+            if (allRecentQueriesLowercase.includes(detectedGap.toLowerCase().trim())) {
+                loggingService.log('INFO', `[CHAINED CYCLE] Skipping — gap already researched: "${detectedGap}"`);
+                return;
+            }
+
+            loggingService.log('INFO', `[CHAINED CYCLE] Launching chain for gap: "${detectedGap}"`);
+            const chain = createNewInsightChain(detectedGap);
+
+            const result = await backgroundCognitionService.runChainedResearchCycle(
+              chain,
+              {
+                messages: messagesRef.current,
                 projectFiles: projectFilesRef.current,
                 contextFileNames: contextFileNamesForCycle,
                 selfNarrative: selfNarrativeRef.current,
                 rcb: rcbRef.current,
                 baseContextPackets,
-            }, backgroundRoleSetting, currentSettings.providers, currentSettings.backgroundWorkflow, backgroundWorkflowStage, allRecentQueriesLowercase);
+              },
+              backgroundRoleSetting,
+              currentSettings.providers
+            );
 
-            // Deduplication check already happened in the service, but double-check here
-            if (insight && allRecentQueriesLowercase.includes(insight.query.toLowerCase().trim())) {
-                loggingService.log('ERROR', `CRITICAL: Duplicate query slipped through: "${insight.query}" - this should not happen!`);
-                return;
+            if (result.insightStored && result.storedInsight) {
+              const atom: MemoryAtom = {
+                uuid: generateUUIDFromService(),
+                timestamp: Date.now(),
+                role: 'model',
+                type: 'steward_note',
+                text: `[Research Chain: ${chain.initialGap}]\n\nQuery: "${result.storedInsight.query}"\n\n${result.storedInsight.insight}`,
+                isInContext: true,
+                isCollapsed: false,
+                activationScore: 1,
+                orbitalStrength: 6,
+                orbitalDecayTurns: 12,
+                insightChainId: chain.chainId,
+                insightId: result.storedInsight.insightId,
+                backgroundInsight: {
+                  query: result.storedInsight.query,
+                  insight: result.storedInsight.insight,
+                  sources: result.storedInsight.sources,
+                  timestamp: result.storedInsight.timestamp,
+                },
+              };
+              setMessages(prev => {
+                const updated = [...prev, atom];
+                messagesRef.current = updated;
+                return updated;
+              });
             }
-            
-            if (insight) {
-                const newAtom: MemoryAtom = {
-                    uuid: uuidv4(),
-                    timestamp: Date.now(),
-                    role: 'model',
-                    type: 'steward_note',
-                    text: `*Proactively researched: "${insight.query}"*\n\n${insight.insight}`,
-                    isInContext: true,
-                    isCollapsed: false,
-                    backgroundInsight: insight,
-                    activationScore: 1.0,
-                    lastActivatedAt: Date.now(),
-                    lastActivatedTurn: currentTurnRef.current,
-                    orbitalStrength: 7, // High-salience default for new insights
-                    orbitalDecayTurns: mapStrengthToTurns(7), // Subject to normal orbital decay
-                };
-                // FIX: Update the ref immediately so subsequent cycles can see this insight
-                setMessages(prev => {
-                    const updated = [...prev, newAtom];
-                    messagesRef.current = updated; // Immediately update ref for next cycle
-                    return updated;
-                });
-                loggingService.log('INFO', 'Background cognition successful, new insight created and activated.', { insight });
-            }
+
+            loggingService.log('INFO', '[CHAINED CYCLE]', {
+              chainId: chain.chainId,
+              insightStored: result.insightStored,
+              log: result.cycleLog,
+            });
         } catch (e: any) {
             loggingService.log('ERROR', 'Background Cognition Cycle failed.', { error: e.toString(), stack: e.stack });
             
@@ -914,10 +938,18 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         });
         loggingService.log('DEBUG', 'Memory decay applied.');
 
+        // Single authoritative clock for this entire turn — shared by all layers and SRG
+        const turnNow = new Date();
+        const turnTimestamp = turnNow.getTime();
+        const turnClockString = turnNow.toLocaleString(undefined, {
+            weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short'
+        });
+
         const userAtom: MemoryAtom = {
-            uuid: uuidv4(), timestamp: Date.now(), role: 'user', type: 'user_message',
+            uuid: uuidv4(), timestamp: turnTimestamp, role: 'user', type: 'user_message',
             text: messageText, isInContext: true, isCollapsed: false,
-            activationScore: 1.0, lastActivatedTurn: currentTurnRef.current, lastActivatedAt: Date.now(),
+            activationScore: 1.0, lastActivatedTurn: currentTurnRef.current, lastActivatedAt: turnTimestamp,
         };
         
         let messagesForThisTurn = [...messagesAfterDecay, userAtom];
@@ -1058,7 +1090,12 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 })(),
                 CORE_NARRATIVE: selfNarrativeRef.current,
                 CONTEXT_FILES: contextProjectFiles.map(f => `--- FILE: ${f.name} ---\n${f.content}`).join('\n\n') || 'No files in context.',
-                RESONANCE_MEMORIES: resonanceMemories.map(m => `[Recalled Memory from Turn ${m.lastActivatedTurn}]\n${m.role}: ${m.text}`).join('\n\n') || 'None.',
+                RESONANCE_MEMORIES: resonanceMemories.map(m => {
+                    const memTime = m.timestamp
+                        ? new Date(m.timestamp).toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })
+                        : `Turn ${m.lastActivatedTurn}`;
+                    return `[Memory — ${memTime}]\n${m.role}: ${m.text}`;
+                }).join('\n\n') || 'None.',
                 PREVIOUS_COGNITIVE_TRACE: previousTurnCognitiveTrace,
             };
 
@@ -1128,13 +1165,15 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
             setMessages(prev => [...prev.filter(m => m.uuid !== userAtom.uuid), userAtom, finalModelAtom!]);
             
             // Ingest user message into SRG for persistent queryability
-            await srgService.ingestHybrid(userAtom.text, {
+            // Prefix with turn clock so the graph carries wall-clock context on every ingested node
+            await srgService.ingestHybrid(`[${turnClockString}] ${userAtom.text}`, {
                 title: 'User Message',
                 source: 'chat',
                 category: 'literature'
             });
 
             let lastCompletedStageId = '';
+            let finalStagePromptDetails: any = null;
 
             for (let i = 0; i < workflow.length; i++) {
                 const stage = workflow[i];
@@ -1144,19 +1183,66 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 setLoadingStage(stage.name + '...');
                 loggingService.log('INFO', `Executing workflow stage: ${stage.name}`);
 
-                let stagePrompt = '';
+                // Separate system-tier context from user-tier inputs
+                // USER_QUERY and CONTEXT_FILES go into the user turn; everything else is internal system data
+                const systemTierContextPackets = [
+                    'RCB',
+                    'RECENT_HISTORY',
+                    'SRG_TRACE',
+                    'RESONANCE_MEMORIES',
+                    'BACKGROUND_INSIGHTS',
+                    'RECALLED_AXIOMS',
+                    'CORE_NARRATIVE',
+                    'IMPORTED_HISTORY',
+                    'PREVIOUS_COGNITIVE_TRACE',
+                ];
+                const systemTierOutputs = ['OUTPUT_OF_l1_subconscious', 'OUTPUT_OF_l2_planner']; // L1 and L2 outputs stay in system tier
+                let systemContextContent = '';
+                let userPrompt = '';
+                
                 for (const input of stage.inputs) {
                     if (input.startsWith('OUTPUT_OF_')) {
-                        const sourceStageId = input.replace('OUTPUT_OF_', '');
-                        const sourceStage = workflow.find(s => s.id === sourceStageId);
-                        stagePrompt += `\n\n--- OUTPUT OF ${sourceStage?.name || sourceStageId} ---\n${workflowOutputs[sourceStageId] || 'No output.'}`;
+                        const outputContent = `\n\n--- ${input} ---\n${workflowOutputs[input.replace('OUTPUT_OF_', '')] || 'No output.'}`;
+                        
+                        // Check if this output should be in system tier
+                        if (systemTierOutputs.includes(input)) {
+                            systemContextContent += outputContent;
+                        } else {
+                            userPrompt += outputContent;
+                        }
                     } else if (ALL_CONTEXT_PACKETS.includes(input as any)) {
-                        stagePrompt += `\n\n--- ${CONTEXT_PACKET_LABELS[input as keyof typeof CONTEXT_PACKET_LABELS]} ---\n${baseContextPackets[input as keyof typeof baseContextPackets] || 'Not available.'}`;
+                        const contextContent = `\n\n--- ${CONTEXT_PACKET_LABELS[input as keyof typeof CONTEXT_PACKET_LABELS]} ---\n${baseContextPackets[input as keyof typeof baseContextPackets] || 'Not available.'}`;
+                        
+                        // System-tier packets (RCB, recent history) go to system instruction
+                        if (systemTierContextPackets.includes(input)) {
+                            systemContextContent += contextContent;
+                        } else {
+                            // Everything else (axioms, files, narrative, etc.) goes to user prompt
+                            userPrompt += contextContent;
+                        }
                     }
                 }
                 
+                // Build the enhanced system prompt with RCB and L1 output
+                const enhancedSystemPrompt = `${stage.systemPrompt}
+
+--- SYSTEM CONTEXT (DO NOT REPEAT TO USER) ---
+
+--- Current Time ---
+${turnClockString}
+${systemContextContent}`;
+                
                 const roleSetting: RoleSetting = { enabled: stage.enabled, provider: stage.provider, selectedModel: stage.selectedModel };
                 const isLastStage = i === synthesisStageIndex;
+                
+                // Capture final stage's prompt details for visibility
+                if (isLastStage) {
+                    finalStagePromptDetails = {
+                        stageName: stage.name,
+                        systemPrompt: enhancedSystemPrompt,
+                        userPrompt: userPrompt.trim(),
+                    };
+                }
                 
                 // Reset skip flag for this layer
                 skipLayerRef.current = false;
@@ -1173,8 +1259,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         lastActivatedAt: 0, lastActivatedTurn: 0, name: stage.name,
                         promptDetails: {
                             stageName: stage.name,
-                            systemPrompt: stage.systemPrompt || '(none)',
-                            userPrompt: stagePrompt.trim() || '(empty)',
+                            systemPrompt: enhancedSystemPrompt || '(none)',
+                            userPrompt: userPrompt.trim() || '(empty)',
                         },
                     } as any;
                     cognitiveTrace.push(liveTraceAtom);
@@ -1184,130 +1270,100 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         : m));
                 }
 
-                const contents: Content[] = [{ role: 'user', parts: [{ text: stagePrompt }] }];
-                const stream = await sendMessageToGemini(contents, stage.systemPrompt, true, roleSetting, aiSettingsRef.current.providers);
+                const contents: Content[] = [{ role: 'user', parts: [{ text: userPrompt }] }];
+                const stream = await sendMessageToGemini(contents, enhancedSystemPrompt, true, roleSetting, aiSettingsRef.current.providers);
                 loggingService.log('DEBUG', `Streaming stage: ${stage.name}`);
                 
                 let streamedText = '';
 
                 // === MID-STREAM COMMAND EXECUTION ===
-                const COMMAND_KEYWORDS = [
-                    'search.brave',
-                    'search.pw',
-                    'search.both',
-                    'srg.q',
-                    'srg.profile',
-                    'srg.neighbors',
-                    'srg.path',
-                    'srg.ingest',
-                    'wo.submit',
-                    'wo.status',
-                    'wo.list',
-                    'wo.revert',
+                const VALID_COMMANDS = [
+                    'search.brave', 'search.pw', 'search.both',
+                    'srg.q', 'srg.profile', 'srg.neighbors', 'srg.path', 'srg.ingest',
+                    'wo.submit', 'wo.status', 'wo.list', 'wo.revert', 'wo.complete', 'wo.fail', 'wo.progress',
                     'bg.research',
-                    'file.list',
-                    'file.find',
-                    'file.read',
-                    'file.write',
-                    'file.delete',
-                    'km.load',
-                    'km.unload',
-                    'km.list',
-                    'km.active',
-                    'cog.route',
-                    'cog.mode',
-                    'exec.run',
-                    'exec.test',
-                    'ralph.escalate',
-                    'ralph.history',
-                    'core.axiom',
-                    'core.write',
-                    'core.read',
+                    'file.list', 'file.find', 'file.read', 'file.write', 'file.delete', 'file.patch',
+                    'km.load', 'km.unload', 'km.list', 'km.active',
+                    'cog.route', 'cog.mode',
+                    'exec.run', 'exec.test',
+                    'ralph.escalate', 'ralph.history',
+                    'core.axiom', 'core.write', 'core.read',
                     'brave.api.healthcheck',
                 ];
 
-                // Strip ALL leading formatting junk
+                // Escape dots so regex treats them as literals
+                const escapedCmds = VALID_COMMANDS.map(c => c.replace(/\./g, '\\.'));
+                const cmdPattern = `(${escapedCmds.join('|')})[ \\t]+([^\\n]+)`;
+
+                // MID-STREAM: only matches lines terminated by \n — never fires on the partial last line still being written.
+                // This prevents "search.brave aircrete\ntutorials" from matching as query="aircrete" mid-stream.
+                const cmdRegexMidStream  = new RegExp(`(?:^|\\n)${cmdPattern}(?=\\n)`, 'i');
+                // END-OF-STREAM: also allows $ so the final line (no trailing newline yet) is caught.
+                const cmdRegexEndOfStream = new RegExp(`(?:^|\\n)${cmdPattern}(?=\\n|$)`, 'i');
+
+                // Strip markdown noise from a single line before testing it as a command
                 const normalizeCommandLine = (line: string) => line.replace(/^[\s*`#>?!|:_~\-•]+/, '').trim();
 
-                const checkAndExecuteCommand = async (text: string, isStreamEnd: boolean = false): Promise<{ shouldContinue: boolean; result?: string; newText?: string }> => {
+                // Find the first valid command in text. Uses tight regex so word-wrapped queries don't get truncated.
+                const findCommand = (text: string, endOfStream: boolean): RegExpExecArray | null => {
+                    const regex = endOfStream ? cmdRegexEndOfStream : cmdRegexMidStream;
+                    const m = regex.exec(text);
+                    if (m) return m;
+                    // Fallback: scan line-by-line with normalization for markdown-decorated commands
+                    // Only accept a line as a command if it is NOT the last line mid-stream (would be partial)
                     const lines = text.split('\n');
-                    const cmdIndex = lines.findIndex(l => {
-                        const cleaned = normalizeCommandLine(l);
-                        return COMMAND_KEYWORDS.some(cmd => cleaned.startsWith(cmd));
-                    });
-
-                    // DEBUG: Log every line to see what's coming through
-                    loggingService.log('DEBUG', `[${stage.name}] Scanning ${lines.length} lines for commands (isStreamEnd=${isStreamEnd})`);
-                    lines.forEach((line, idx) => {
-                        const cleaned = normalizeCommandLine(line);
-                        const isCmd = COMMAND_KEYWORDS.some(cmd => cleaned.startsWith(cmd));
-                        if (cleaned || isCmd) {
-                            loggingService.log('DEBUG', `  Line ${idx}: RAW="${line.substring(0, 60)}" | CLEAN="${cleaned.substring(0, 60)}" | isCmd=${isCmd}`);
+                    for (let i = 0; i < lines.length; i++) {
+                        const isLastLine = i === lines.length - 1;
+                        if (!endOfStream && isLastLine) break; // never fire on the still-streaming last line
+                        const normalized = normalizeCommandLine(lines[i]);
+                        if (!normalized) continue;
+                        const lineMatch = new RegExp(`^${cmdPattern}$`, 'i').exec(normalized);
+                        if (lineMatch) {
+                            // Return a compatible match-array: index 0=fullMatch, 1=keyword, 2=args
+                            const synthetic = [normalized, lineMatch[1], lineMatch[2]] as unknown as RegExpExecArray;
+                            synthetic.index = text.indexOf(lines[i]);
+                            synthetic.input = text;
+                            return synthetic;
                         }
-                    });
+                    }
+                    return null;
+                };
 
-                    if (cmdIndex === -1) {
-                        loggingService.log('DEBUG', `[${stage.name}] No command detected in any line`);
+                const checkAndExecuteCommand = async (text: string, isStreamEnd: boolean = false): Promise<{ shouldContinue: boolean; result?: string; newText?: string; priorOutput?: string }> => {
+                    const match = findCommand(text, isStreamEnd);
+                    
+                    if (!match) {
+                        loggingService.log('DEBUG', `[${stage.name}] No command detected`);
                         return { shouldContinue: false };
                     }
 
-                    loggingService.log('INFO', `[${stage.name}] FOUND COMMAND at line ${cmdIndex} of ${lines.length}`);
-
-                    const isLastLine = cmdIndex === lines.length - 1;
-                    loggingService.log('DEBUG', `[${stage.name}] Command position: isLastLine=${isLastLine}, isStreamEnd=${isStreamEnd}`);
-
-                    if (isLastLine && !isStreamEnd) {
-                        // Wait for the command to finish streaming (either a newline or stream ends)
-                        loggingService.log('DEBUG', `[${stage.name}] Command on last line and stream not ended yet - WAITING for more input`);
-                        return { shouldContinue: false };
-                    }
-
-                    const rawCommandLine = lines[cmdIndex];
-                    const commandLine = normalizeCommandLine(rawCommandLine);
-                    loggingService.log('DEBUG', `[${stage.name}] Raw command line: "${rawCommandLine.substring(0, 100)}"`);
-                    loggingService.log('DEBUG', `[${stage.name}] Normalized command line: "${commandLine.substring(0, 100)}"`);
-
-                    if (!commandLine) {
-                        loggingService.log('DEBUG', `[${stage.name}] Empty command line after normalization`);
-                        return { shouldContinue: false };
-                    }
-
-                    loggingService.log('INFO', `[${stage.name}] ✅ Detected command: ${commandLine}`);
-
-                    // Remove the command line from streamedText so it doesn't appear in output
-                    const textBeforeCommand = lines.slice(0, cmdIndex).join('\n');
-
-                    const matchedCommand = COMMAND_KEYWORDS.find(cmd => commandLine.startsWith(cmd));
-                    if (!matchedCommand) {
-                        return { shouldContinue: false };
-                    }
-
-                    const args = commandLine.slice(matchedCommand.length).trim();
+                    const fullMatch = match[0].trim();
+                    const commandKeyword = match[1].toLowerCase();
+                    const args = match[2].trim();
+                    
+                    loggingService.log('INFO', `[${stage.name}] ✅ DETECTED COMMAND: "${fullMatch}" | keyword="${commandKeyword}" | args="${args.substring(0, 100)}"`);
+                    
+                    // Split text around the matched command
+                    const matchIndex = text.indexOf(fullMatch);
+                    const textBeforeCommand = text.substring(0, matchIndex).trim();
+                    const textAfterCommand = text.substring(matchIndex + fullMatch.length).trim();
+                    
                     let commandResult = '';
 
                     try {
-                        switch (matchedCommand) {
+                        switch (commandKeyword) {
                             case 'search.brave':
                             case 'search.pw':
                             case 'search.both': {
-                                let query = args;
-
-                                // Strip wrapping json blocks and any sort of quotes/backticks
-                                if (query.toLowerCase().startsWith('```json') && query.endsWith('```')) {
-                                    query = query.slice(7, -3).trim();
-                                } else if (query.startsWith('```') && query.endsWith('```')) {
-                                    query = query.slice(3, -3).trim();
-                                }
-
-                                query = query.replace(/^[`'"\s]+|[`'"\s]+$/g, '').trim();
+                                let query = args.replace(/^[`'"\s]+|[`'"\s]+$/g, '').trim();
 
                                 if (!query) {
-                                    throw new Error("Parsed search query was empty. Format your command exactly as 'search.brave your query here' without code blocks.");
+                                    throw new Error("Search query was empty.");
                                 }
 
                                 loggingService.log('INFO', `[${stage.name}] Executing web search: "${query}"`);
                                 const searchResult = await performWebSearch(query, roleSetting, aiSettingsRef.current.providers, aiSettingsRef.current);
-                                commandResult = searchResult ? `[WEB SEARCH RESULTS]\n${searchResult.text}\n\n[SOURCES]\n${searchResult.sources?.map((s: any) => s.web?.uri || s.url).filter(Boolean).join('\n') || 'None'}` : "[NO SEARCH RESULTS]";
+                                commandResult = searchResult ? `[WEB SEARCH RESULTS for "${query}"]\n${searchResult.text}\n\n[SOURCES]\n${searchResult.sources?.map((s: any) => s.web?.uri || s.url).filter(Boolean).join('\n') || 'None'}` : `[NO SEARCH RESULTS for "${query}"]`;
                                 break;
                             }
                             case 'srg.q': {
@@ -1382,7 +1438,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                                 break;
                             }
                             default: {
-                                commandResult = `[SYSTEM NOTIFICATION] UNKNOWN COMMAND OR SYNTAX FAILURE: '${commandLine}'. System failed to parse this. Review TOOL CALL PROTOCOL exactly. Example: 'search.brave your query'`;
+                                commandResult = `[SYSTEM NOTIFICATION] UNKNOWN COMMAND OR SYNTAX FAILURE: '${fullMatch}'. System failed to parse this. Review TOOL CALL PROTOCOL exactly. Example: 'search.brave your query'`;
                                 break;
                             }
                         }
@@ -1390,8 +1446,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         loggingService.log('ERROR', `[${stage.name}] Command execution failed`, { error: err.message });
                         return {
                             shouldContinue: true,
-                            result: textBeforeCommand + '\n\n[SYSTEM EXECUTION ERROR: ' + err.message + ']\n\nThe system encountered an error attempting to run your command. Please fix and try again.\n\nContinue your response:',
-                            newText: textBeforeCommand + '\n\n> ❌ System Error: ' + err.message
+                            result: `[SYSTEM EXECUTION ERROR: ${err.message}]\n\nThe system encountered an error running the command. Please fix and try again.\n\nContinue your response:`,
+                            newText: textBeforeCommand + '\n\n> ❌ System Error: ' + err.message,
+                            priorOutput: textBeforeCommand
                         };
                     }
 
@@ -1399,11 +1456,13 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                     return {
                         shouldContinue: true,
-                        result: textBeforeCommand + '\n\n' + commandResult + '\n\nContinue your response:',
-                        newText: textBeforeCommand + '\n\n> Executing: ' + commandLine + '...'
+                        result: commandResult,
+                        newText: textBeforeCommand + '\n\n> Executing: ' + fullMatch + '...',
+                        priorOutput: textBeforeCommand
                     };
                 };
                 let pendingCommandResult = '';
+                let pendingPriorOutput = '';
                 let streamBrokenByCommand = false;
 
                 for await (const chunk of stream) {
@@ -1420,19 +1479,24 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                             loggingService.log('INFO', `[${stage.name}] Breaking stream to re-feed model with command results`);
                             streamBrokenByCommand = true;
                             pendingCommandResult = cmdCheck.result;
+                            pendingPriorOutput = cmdCheck.priorOutput ?? '';
 
-                            // Update the UI one last time with the text BEFORE the command to hide the command itself
+                            // Update the UI one last time with the text BEFORE the command, plus system acknowledgment
                             const cleanedText = cmdCheck.newText ?? streamedText;
+                            const acknowledgedText = cleanedText + '\n\n[System: Command acknowledged, executing...]';
                             if (isLastStage) {
                                 setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
-                                    ? { ...m, text: cleanedText + '...' }
+                                    ? { ...m, text: acknowledgedText, cognitiveTrace: [...(m.cognitiveTrace || [])] }
                                     : m));
                             } else if (traceAtomUuid) {
+                                // Update the trace atom with cleaned text and acknowledgment
                                 const updatedTrace = cognitiveTrace.map(t =>
-                                    t.uuid === traceAtomUuid ? { ...t, text: cleanedText } : t
+                                    t.uuid === traceAtomUuid 
+                                        ? { ...t, text: acknowledgedText, isGenerating: false }
+                                        : t
                                 );
                                 setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
-                                    ? { ...m, cognitiveTrace: [...updatedTrace] }
+                                    ? { ...m, cognitiveTrace: [...updatedTrace], text: m.text }
                                     : m));
                             }
                             break;
@@ -1445,9 +1509,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
 
                     if (!streamBrokenByCommand) {
                         if (isLastStage) {
-                            // Final stage: stream into the main message text
+                            // Final stage: stream into the main message text, ALWAYS preserve cognitiveTrace
                             setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                ? { ...m, text: streamedText + '...' } 
+                                ? { ...m, text: streamedText + '...', cognitiveTrace: [...(m.cognitiveTrace || [])] } 
                                 : m));
                         } else if (traceAtomUuid) {
                             // Intermediate stage: stream into the cognitiveTrace box
@@ -1464,20 +1528,46 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 // === HANDLE COMMAND RESULTS ===
                 // If a command was detected and executed, re-feed the model
                 loggingService.log('DEBUG', `[${stage.name}] Stream ended. Checking for end-of-stream commands (streamBrokenByCommand=${streamBrokenByCommand})`);
-                const finalCheck = streamBrokenByCommand ? { shouldContinue: true, result: pendingCommandResult } : await checkAndExecuteCommand(streamedText, true);
+                const finalCheck = streamBrokenByCommand
+                    ? { shouldContinue: true, result: pendingCommandResult, priorOutput: pendingPriorOutput }
+                    : await checkAndExecuteCommand(streamedText, true);
                 loggingService.log('DEBUG', `[${stage.name}] Final check result: shouldContinue=${finalCheck.shouldContinue}`);
                 
                 if (finalCheck.shouldContinue && finalCheck.result) {
                     loggingService.log('INFO', `[${stage.name}] Command detected at end of stream. Re-feeding model with results and continuing...`);
                     
-                    // Add the command result to stagePrompt for next iteration
-                    stagePrompt = finalCheck.result;
-                    
-                    // Clear streamedText and get a fresh stream from the model with the injected context
-                    streamedText = '';
+                    // Build multi-turn contents: prior model output + command result as new user turn
+                    const priorModelOutput = finalCheck.priorOutput ?? streamedText;
+                    const acknowledgedOutput = priorModelOutput + '\n\n[System: Command acknowledged, executing...]';
+                    const continueContents: any[] = [
+                        ...(priorModelOutput ? [{ role: 'model', parts: [{ text: priorModelOutput }] }] : []),
+                        { role: 'user', parts: [{ text: `[SYSTEM COMMAND RESULT]\n${finalCheck.result}\n\nContinue your response:` }] }
+                    ];
+
+                    // Show cleaned preamble with system acknowledgment in the UI immediately (before the search/network await)
+                    // so the pre-command text is never wiped during the round-trip.
+                    // Also mutate cognitiveTrace[idx] so continuation .map() spreads start from
+                    // acknowledgedOutput rather than the initial empty string.
+                    if (isLastStage) {
+                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                            ? { ...m, text: acknowledgedOutput + '\n\n...', cognitiveTrace: [...(m.cognitiveTrace || [])] }
+                            : m));
+                    } else if (traceAtomUuid) {
+                        const idx = cognitiveTrace.findIndex(t => t.uuid === traceAtomUuid);
+                        if (idx !== -1) {
+                            cognitiveTrace[idx] = { ...cognitiveTrace[idx], text: acknowledgedOutput };
+                        }
+                        setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                            ? { ...m, cognitiveTrace: [...cognitiveTrace] }
+                            : m));
+                    }
+
+                    // Seed streamedText with what the model already said so the UI never goes blank
+                    // New continuation chunks will append to this, giving a seamless display
+                    streamedText = priorModelOutput ? priorModelOutput + '\n\n' : '';
                     const continueStream = await sendMessageToGemini(
-                        [{ role: 'user', parts: [{ text: stagePrompt }] }],
-                        stage.systemPrompt,
+                        continueContents,
+                        enhancedSystemPrompt,
                         true,
                         roleSetting,
                         aiSettingsRef.current.providers
@@ -1495,15 +1585,26 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         }
                         
                         if (isLastStage) {
+                            // Preserve ALL cognitiveTrace layers while updating main text
                             setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                ? { ...m, text: streamedText + '...' } 
+                                ? { 
+                                    ...m, 
+                                    text: streamedText + '...', 
+                                    cognitiveTrace: m.cognitiveTrace ? [...m.cognitiveTrace] : [...(cognitiveTrace || [])] 
+                                } 
                                 : m));
                         } else if (traceAtomUuid) {
-                            const updatedTrace = cognitiveTrace.map(t => 
-                                t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
-                            );
+                            // Ensure local cognitiveTrace stays in sync with what we're streaming
+                            const traceIdx = cognitiveTrace.findIndex(t => t.uuid === traceAtomUuid);
+                            if (traceIdx !== -1) {
+                                cognitiveTrace[traceIdx] = { ...cognitiveTrace[traceIdx], text: streamedText };
+                            }
                             setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                ? { 
+                                    ...m, 
+                                    cognitiveTrace: [...cognitiveTrace], 
+                                    text: m.text 
+                                } 
                                 : m));
                         }
                     }
@@ -1517,11 +1618,37 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                         loopCount++;
                         loggingService.log('INFO', `[${stage.name}] Command loop iteration ${loopCount}`);
                         
-                        stagePrompt = nextCheck.result;
-                        streamedText = '';
+                        const loopPriorOutput = nextCheck.priorOutput ?? streamedText;
+                        const loopPriorWithAck = loopPriorOutput + '\n\n[System: Command acknowledged, executing...]';
+                        const loopContents: any[] = [
+                            ...(loopPriorOutput ? [{ role: 'model', parts: [{ text: loopPriorOutput }] }] : []),
+                            { role: 'user', parts: [{ text: `[SYSTEM COMMAND RESULT]\n${nextCheck.result}\n\nContinue your response:` }] }
+                        ];
+
+                        // Show cleaned preamble with system acknowledgment before the next round-trip,
+                        // and sync the local cognitiveTrace entry so subsequent .map() spreads start from loopPriorOutput.
+                        if (isLastStage) {
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                ? { ...m, text: loopPriorWithAck + '\n\n...', cognitiveTrace: [...(m.cognitiveTrace || [])] }
+                                : m));
+                        } else if (traceAtomUuid) {
+                            const loopIdx = cognitiveTrace.findIndex(t => t.uuid === traceAtomUuid);
+                            if (loopIdx !== -1) {
+                                cognitiveTrace[loopIdx] = { ...cognitiveTrace[loopIdx], text: loopPriorWithAck };
+                            }
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                ? { ...m, cognitiveTrace: [...cognitiveTrace], text: m.text }
+                                : m));
+                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                ? { ...m, cognitiveTrace: [...cognitiveTrace] }
+                                : m));
+                        }
+
+                        // Seed with prior output so UI stays populated through the next command's continuation
+                        streamedText = loopPriorOutput ? loopPriorOutput + '\n\n' : '';
                         const nextStream = await sendMessageToGemini(
-                            [{ role: 'user', parts: [{ text: stagePrompt }] }],
-                            stage.systemPrompt,
+                            loopContents,
+                            enhancedSystemPrompt,
                             true,
                             roleSetting,
                             aiSettingsRef.current.providers
@@ -1658,6 +1785,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 text: finalResponseText,
                 generatedFiles: generatedFiles.length > 0 ? generatedFiles : undefined,
                 cognitiveTrace: cognitiveTrace.length > 0 ? cognitiveTrace : undefined,
+                promptDetails: finalStagePromptDetails || undefined,
                 contextSnapshot: {
                     files: [...contextProjectFiles.map(f => f.name), ...contextGeneratedFileNamesRef.current],
                     messages: contextMessagesForPayload.map(m => m.uuid),

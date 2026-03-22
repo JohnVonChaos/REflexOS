@@ -687,6 +687,73 @@ app.post('/search', async (req, res) => {
     }
 });
 
+// ---------------------------------------------------------------------------
+// Brave Search Proxy
+// Browser JS cannot call api.search.brave.com directly (CORS blocked).
+// This endpoint runs server-side (no CORS) and forwards the request.
+// ---------------------------------------------------------------------------
+app.post('/brave-search', async (req, res) => {
+    const { apiKey, apiUrl, query } = req.body;
+
+    if (!apiKey || !apiKey.trim()) {
+        return res.status(400).json({ success: false, message: 'Missing apiKey', error: 'NO_KEY' });
+    }
+    if (!query || !query.trim()) {
+        return res.status(400).json({ success: false, message: 'Missing query', error: 'NO_QUERY' });
+    }
+
+    const targetUrl = (apiUrl || 'https://api.search.brave.com/res/v1/web/search').trim();
+
+    try {
+        console.log(`[BraveProxy] Fetching: ${targetUrl}?q=${encodeURIComponent(query)}`);
+
+        const braveRes = await fetch(`${targetUrl}?q=${encodeURIComponent(query)}`, {
+            headers: {
+                'Accept': 'application/json',
+                'Accept-Encoding': 'gzip',
+                'X-Subscription-Token': apiKey.trim(),
+            },
+            signal: AbortSignal.timeout(15000),
+        });
+
+        console.log(`[BraveProxy] Brave API responded: ${braveRes.status}`);
+
+        if (!braveRes.ok) {
+            const errText = await braveRes.text();
+            console.error(`[BraveProxy] Error body: ${errText}`);
+            return res.status(braveRes.status).json({
+                success: false,
+                message: `Brave API returned ${braveRes.status}: ${braveRes.statusText}`,
+                statusCode: braveRes.status,
+                error: `HTTP_${braveRes.status}`,
+            });
+        }
+
+        const data = await braveRes.json();
+        const resultCount = data?.web?.results?.length || 0;
+
+        console.log(`[BraveProxy] Success — ${resultCount} results`);
+        res.json({
+            success: true,
+            message: `Brave API OK — ${resultCount} result(s)`,
+            statusCode: 200,
+            resultsCount: resultCount,
+            data,
+        });
+
+    } catch (err: any) {
+        console.error('[BraveProxy] Fetch error:', err);
+        const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError';
+        res.status(500).json({
+            success: false,
+            message: isTimeout
+                ? 'Request to Brave API timed out (15s)'
+                : `Network error: ${err.message}`,
+            error: isTimeout ? 'TIMEOUT' : 'NETWORK',
+        });
+    }
+});
+
 const PORT = 3005;
 app.listen(PORT, () => {
     console.log(`Browser Agent Server running on port ${PORT}`);
