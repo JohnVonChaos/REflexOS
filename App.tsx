@@ -462,6 +462,7 @@ function App() {
                   messages={chat.messages}
                   projectFiles={chat.projectFiles}
                   sendMessage={chat.sendMessage}
+                  rerunLastTurn={chat.rerunLastTurn}
                   isLoading={chat.isLoading}
                   loadingStage={chat.loadingStage}
                   error={chat.error}

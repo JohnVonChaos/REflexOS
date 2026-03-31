@@ -1,27 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { CheckIcon, CloseIcon, ClockIcon } from './icons/index';
-
-interface WorkOrder {
-    id: string;
-    title: string;
-    description: string;
-    status: 'pending' | 'active' | 'completed' | 'rejected' | 'unresolved';
-    createdAt: number;
-    updatedAt: number;
-    stage?: string; // Which cognitive stage or agent is handling this
-    errorMessage?: string;
-    rejectionReason?: string; // Why Ralph rejected this order
-    progress?: number; // 0-100
-    originalRequestId?: string; // If this is a reframed order, link to original
-    reframedAttempts?: number; // How many times L2 has reframed this
-}
+import { workOrderService, WorkOrder } from '../services/workOrderService';
 
 interface WorkOrderPanelProps {
-    workOrders: WorkOrder[];
+    // Kept optional for backward compat, but panel self-subscribes to the service.
+    workOrders?: WorkOrder[];
 }
 
-export const WorkOrderPanel: React.FC<WorkOrderPanelProps> = ({ workOrders }) => {
+export const WorkOrderPanel: React.FC<WorkOrderPanelProps> = () => {
     const [sortByStatus, setSortByStatus] = useState<'all' | 'active' | 'completed'>('all');
+    const [workOrders, setWorkOrders] = useState<WorkOrder[]>(() => workOrderService.getAll());
+
+    // Poll the singleton every 1.5s so new work orders appear automatically.
+    useEffect(() => {
+        const tick = () => setWorkOrders(workOrderService.getAll());
+        tick();
+        const id = setInterval(tick, 1500);
+        return () => clearInterval(id);
+    }, []);
 
     const filteredOrders = workOrders.filter(order => {
         if (sortByStatus === 'active') return order.status === 'pending' || order.status === 'active' || order.status === 'rejected' || order.status === 'unresolved';

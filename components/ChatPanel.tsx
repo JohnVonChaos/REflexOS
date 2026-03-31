@@ -532,6 +532,7 @@ interface ChatPanelProps {
     messages: MemoryAtom[];
     projectFiles: ProjectFile[];
     sendMessage: (message: string) => void;
+    rerunLastTurn?: () => void;
     isLoading: boolean;
     loadingStage: string;
     error: Error | null;
@@ -569,6 +570,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     messages,
     projectFiles,
     sendMessage,
+    rerunLastTurn,
     isLoading,
     loadingStage,
     error,
@@ -771,6 +773,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 >
                                     <WorkflowIcon />
                                 </button>
+                                {rerunLastTurn && (
+                                    <button
+                                        onClick={rerunLastTurn}
+                                        className="p-2 text-gray-400 hover:text-cyan-300 hover:bg-gray-600 rounded-full transition-colors"
+                                        title="Regenerate - rerun the last turn"
+                                    >
+                                        ↻
+                                    </button>
+                                )}
                             </>
                         )}
                         <button

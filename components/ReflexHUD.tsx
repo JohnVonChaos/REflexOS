@@ -108,7 +108,7 @@ export const ReflexHUD: React.FC<ReflexHUDProps> = ({
             <div className="absolute inset-0 bg-gray-950 text-cyan-500 font-mono text-sm flex overflow-hidden">
                 {/* Left Panel: Work Orders — full height */}
                 <div className="w-64 flex-shrink-0 border-r border-cyan-900 bg-gray-900/20 overflow-y-auto overflow-x-hidden hidden md:block">
-                    <WorkOrderPanel workOrders={[]} />
+                    <WorkOrderPanel />
                 </div>
 
                 {/* Center: Log stream */}
@@ -235,7 +235,7 @@ export const ReflexHUD: React.FC<ReflexHUDProps> = ({
 
                 {/* Left Panel: Work Orders */}
                 <div className="w-64 flex-shrink-0 border-r border-cyan-900 bg-gray-900/20 overflow-y-auto overflow-x-hidden hidden md:block">
-                    <WorkOrderPanel workOrders={[]} />
+                    <WorkOrderPanel />
                 </div>
 
                 {/* Center Panel: The Arena (Scratchpad) */}

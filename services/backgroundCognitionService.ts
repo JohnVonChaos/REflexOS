@@ -161,11 +161,32 @@ Approve or reject.
 }
 
 function parseL2Decision(output: string): {
-  decision: 'search' | 'wait' | 'close';
+  decision: 'search' | 'wait' | 'close' | 'route_to_ralph';
   reasoning: string;
   nextQuery?: string;
   queryRationale?: string;
+  route?: string;
+  rawOutput?: string;
 } {
+  // STOP PARSING. If L2 contains natural language commands or mixed output,
+  // route the ENTIRE THING to Ralph. Ralph decides what to do.
+  
+  const hasHeyRalph = /hey\s+ralph/i.test(output);
+  const hasHeyBrave = /hey\s+brave/i.test(output);
+  const hasWorkOrderSignal = /wo\.submit|create\s+work\s+order/i.test(output);
+  const hasDecisionStructure = /DECISION:\s*(search|wait|close)/i.test(output);
+  
+  // If there are natural language commands OR no structured decision format,
+  // send to Ralph and let Ralph handle it
+  if (hasHeyRalph || hasHeyBrave || hasWorkOrderSignal || !hasDecisionStructure) {
+    return {
+      decision: 'route_to_ralph',
+      reasoning: 'Natural language commands detected or no structured format — routing to Ralph',
+      rawOutput: output,
+    };
+  }
+
+  // Only parse if there's clear structured format
   const decisionMatch = output.match(/DECISION:\s*(search|wait|close)/i);
   const queryMatch = output.match(/NEXT QUERY:\s*"([^"]+)"/i);
   const rationaleMatch = output.match(/QUERY RATIONALE:\s*([^\n]+)/i);
@@ -302,7 +323,8 @@ class BackgroundCognitionService {
     insightChain: InsightChain,
     context: FullCognitionContext,
     roleSetting: RoleSetting,
-    providers: AISettings['providers']
+    providers: AISettings['providers'],
+    aiSettings?: AISettings
   ): Promise<{ insightStored: boolean; storedInsight?: ChainedInsight; cycleLog: string[] }> {
 
     const cycleLog: string[] = [];
@@ -317,23 +339,20 @@ class BackgroundCognitionService {
     const l2DecisionPrompt = buildL2DecisionPrompt(l1Output, insightChain, context);
     const l2Output = await generateText(l2DecisionPrompt, L2_DECISION_SYSTEM_PROMPT, roleSetting, providers);
     
-    // Fuzzy command capture: scan for any work order or search commands in L2 output
-    const fuzzyCommands = fuzzyCommandCaptureService.extractAllCommands(l2Output);
-    if (fuzzyCommands.length > 0) {
-      for (const cmd of fuzzyCommands) {
-        if (cmd.type === 'work_order' && cmd.payload?.title) {
-          const workOrder = workOrderService.createWorkOrder(
-            cmd.payload.title,
-            cmd.payload.description || '',
-            'l2_decision'
-          );
-          cycleLog.push(`Work order captured: ${workOrder.id}`);
-        }
-      }
-    }
-
     const l2Decision = parseL2Decision(l2Output);
     cycleLog.push(`L2 decision: ${l2Decision.decision}`);
+
+    if (l2Decision.decision === 'route_to_ralph') {
+      // L2 has natural language commands — route entire output to Ralph
+      // Ralph will handle work orders, searches, everything
+      loggingService.log('INFO', `[CHAIN] Routing L2 output to Ralph for command execution`, { outputLength: l2Output.length });
+      cycleLog.push(`Routed to Ralph for execution`);
+      
+      // Ralph will watch the L2 output and execute commands as they're parsed
+      // For now, just log that we're delegating to Ralph
+      // TODO: Implement token stream monitoring for Ralph intercepts
+      return { insightStored: false, cycleLog };
+    }
 
     if (l2Decision.decision === 'close') {
       insightChain.status = 'closed';
@@ -356,7 +375,7 @@ class BackgroundCognitionService {
     cycleLog.push(`Searching: "${l2Decision.nextQuery}"`);
     
     // Check for malformed search commands in L2 output
-    let searchResults = await performWebSearch(l2Decision.nextQuery, roleSetting, providers);
+    let searchResults = await performWebSearch(l2Decision.nextQuery, roleSetting, providers, aiSettings);
     
     if (!searchResults || !searchResults.text || searchResults.text.length < 50) {
       // Search might have failed due to malformed command
@@ -434,7 +453,8 @@ class BackgroundCognitionService {
     providers: AISettings['providers'],
     workflow: WorkflowStage[],
     workflowStage?: WorkflowStage,
-    recentQueriesForDedup?: string[]
+    recentQueriesForDedup?: string[],
+    aiSettings?: AISettings
   ): Promise<BackgroundInsight | null> {
     const { messages } = context;
     if (messages.length < 2) {
@@ -445,7 +465,7 @@ class BackgroundCognitionService {
     // -------- CODING AGENT BRANCH --------
     if (workflowStage?.id === 'code_maintenance') {
       const atoms = await this.runCodeMaintenanceCycle(
-        context, workflowStage, roleSetting, providers
+        context, workflowStage, roleSetting, providers, aiSettings
       );
       if (atoms.length > 0) {
         // Return a synthetic BackgroundInsight so callers can persist the result
@@ -528,7 +548,7 @@ class BackgroundCognitionService {
       if (shouldSearchWeb) {
         loggingService.log('INFO', '[BACKGROUND CONSCIOUS] SRG insufficient - performing web search...');
 
-        const searchResult = await performWebSearch(query, roleSetting, providers);
+        const searchResult = await performWebSearch(query, roleSetting, providers, aiSettings);
 
         if (searchResult && searchResult.text) {
           loggingService.log('INFO', `[BACKGROUND CONSCIOUS] Web search returned ${searchResult.text.length} chars - distilling...`);
@@ -922,7 +942,7 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
   /**
    * Helper to execute Ask commands during background cognition
    */
-  private async executeAskCommand(commandLine: string, context: FullCognitionContext, providers: AISettings['providers']): Promise<string> {
+  private async executeAskCommand(commandLine: string, context: FullCognitionContext, providers: AISettings['providers'], aiSettings?: AISettings): Promise<string> {
       try {
         const normalizeCommandLine = (line: string) => line.replace(/^[\s*`#>_~|:*]+/, '').trim();
         const raw = commandLine;
@@ -971,7 +991,7 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
                  }
 
                  const fakeRole: RoleSetting = { enabled: true, provider: 'gemini', selectedModel: 'gemini-2.5-flash' };
-               const results = await performWebSearch(query, fakeRole, providers);
+               const results = await performWebSearch(query, fakeRole, providers, aiSettings);
                console.log(`[BG SERVICE] Search completed - ${results ? results.text.length : 0} chars returned`);
                return results ? `${results.text}\nSources: ${results.sources?.map((s: any) => s.web?.uri).filter(Boolean).join(', ')}` : "No results found.";
           }
@@ -1017,7 +1037,8 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
     context: FullCognitionContext,
     workflowStage: WorkflowStage,
     roleSetting: RoleSetting,
-    providers: AISettings['providers']
+    providers: AISettings['providers'],
+    aiSettings?: AISettings
   ): Promise<MemoryAtom[]> {
     loggingService.log('INFO', '[CODE MAINTENANCE] Starting coding agent cycle...');
     await scratchpadService.append('SYSTEM', `🚀 CODE MAINTENANCE: Starting task proposal for "${workflowStage.name}"`, 'RESEARCH', 'LOW');
@@ -1044,7 +1065,7 @@ ${selfNarrative ? selfNarrative.substring(0, 2000) : 'None'}
           
           if (cmdIndex !== -1) {
               const commandLine = lines[cmdIndex].trim();
-              const result = await this.executeAskCommand(commandLine, context, providers);
+              const result = await this.executeAskCommand(commandLine, context, providers, aiSettings);
               contents.push({ role: 'model', parts: [{ text: lines.slice(0, cmdIndex + 1).join('\n') }] });
               contents.push({ role: 'user', parts: [{ text: `> ${result}` }] });
               finalProposalOutput += lines.slice(0, cmdIndex + 1).join('\n') + `\n> ${result}\n\n`;
@@ -1188,7 +1209,7 @@ export async function runWebResearchCycle(
     };
 
     // Use performWebSearch instead of browser tools
-    const searchResult = await performWebSearch(topic, roleSetting as RoleSetting, providers);
+    const searchResult = await performWebSearch(topic, roleSetting as RoleSetting, providers, session?.aiSettings);
 
     if (!searchResult || !searchResult.text) {
       console.error('Search failed or returned no text.');

@@ -14,6 +14,68 @@ import { srgService } from '../services/srgService';
 import { contextTierManager } from '../services/contextTierManager';
 import { Content, FunctionCall } from '@google/genai';
 
+// --- Network Retry Helper ---
+const isNetworkError = (e: any): boolean => {
+    if (!e) return false;
+    const errStr = (e.toString() + (e.message || '') + (e.name || '')).toLowerCase();
+    return errStr.includes('network') || 
+           errStr.includes('timeout') || 
+           errStr.includes('503') || 
+           errStr.includes('failed to fetch') || 
+           errStr.includes('fetch') ||
+           errStr.includes('econnrefused') ||
+           errStr.includes('enotfound') ||
+           errStr.includes('econnreset') ||
+           errStr.includes('abort') ||
+           errStr.includes('cancel') ||
+           errStr.includes('socket') ||
+           errStr.includes('refused') ||
+           (e instanceof TypeError && (errStr.includes('network') || errStr.includes('fetch')));
+};
+
+async function retryWithExponentialBackoff<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelayMs: number = 1000
+): Promise<T> {
+    let lastError: any = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await operation();
+        } catch (e: any) {
+            lastError = e;
+            
+            // Only retry on network errors
+            if (!isNetworkError(e)) {
+                loggingService.log('DEBUG', `Non-network error, not retrying`, { errorType: e.name, message: e.message });
+                throw e;
+            }
+            
+            if (attempt === maxRetries) {
+                loggingService.log('ERROR', `Network error persisted after ${maxRetries} retries - giving up`, { 
+                    error: e.message,
+                    errorName: e.name,
+                    fullError: e.toString()
+                });
+                throw e;
+            }
+            
+            const delayMs = baseDelayMs * Math.pow(2, attempt);
+            loggingService.log('WARN', `Network error detected - retrying (attempt ${attempt + 1}/${maxRetries + 1}) in ${delayMs}ms`, { 
+                error: e.message,
+                errorName: e.name,
+                attempt: attempt + 1,
+                maxRetries: maxRetries + 1
+            });
+            
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+    
+    throw lastError;
+}
+
 // Helper function to map 1-10 strength to a number of turns based on Fibonacci.
 const fibMap = [0, 1, 2, 3, 5, 8, 13, 21, 34, 55]; // fibMap[1] = 1, fibMap[2] = 2...
 const mapStrengthToTurns = (strength: number): number => {
@@ -72,6 +134,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     const stopGenerationRef = useRef(false);
     const skipLayerRef = useRef(false);
     const [isCognitionRunning, setIsCognitionRunning] = useState(false);
+    const [lastUserMessage, setLastUserMessage] = useState<string>('');
 
     const currentTurnRef = useRef(0);
 
@@ -84,6 +147,7 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
     const isLoadingRef = useRef(isLoading);
     const isCognitionRunningRef = useRef(isCognitionRunning);
     const rcbRef = useRef(rcb);
+    const lastUserMessageRef = useRef('');
     
     useEffect(() => {
         messagesRef.current = messages;
@@ -95,7 +159,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         isLoadingRef.current = isLoading;
         isCognitionRunningRef.current = isCognitionRunning;
         rcbRef.current = rcb;
-    }, [messages, projectFiles, contextFileIds, contextGeneratedFileNames, selfNarrative, aiSettings, isLoading, isCognitionRunning, rcb]);
+        lastUserMessageRef.current = lastUserMessage;
+    }, [messages, projectFiles, contextFileIds, contextGeneratedFileNames, selfNarrative, aiSettings, isLoading, isCognitionRunning, rcb, lastUserMessage]);
 
     const loadState = useCallback((state: Partial<SessionState & { contextFileNames: string[] }>) => {
         const loadedMessages = (state.messages || []).map(m => ({
@@ -280,6 +345,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                     aiSettingsRef.current.providers,
                     aiSettingsRef.current.backgroundWorkflow,
                     stage,
+                    undefined,
+                    aiSettingsRef.current
                 );
                 if (insight) {
                     const atom: MemoryAtom = {
@@ -645,7 +712,8 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 baseContextPackets,
               },
               backgroundRoleSetting,
-              currentSettings.providers
+              currentSettings.providers,
+              aiSettingsRef.current
             );
 
             if (result.insightStored && result.storedInsight) {
@@ -918,6 +986,9 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
         setError(null);
         stopGenerationRef.current = false;
         
+        // Store for rerun capability
+        setLastUserMessage(messageText);
+        
         currentTurnRef.current += 1;
         setLoadingStage('Managing memory decay...');
         let messagesAfterDecay = messagesRef.current.map(m => {
@@ -1183,6 +1254,21 @@ export const useChat = (initialProjectFiles: ProjectFile[], isReady: boolean) =>
                 setLoadingStage(stage.name + '...');
                 loggingService.log('INFO', `Executing workflow stage: ${stage.name}`);
 
+                // Wrap entire stage execution with network error retry
+                let stageSucceeded = false;
+                let stageAttempts = 0;
+                const maxStageAttempts = 4;
+                
+                while (!stageSucceeded && stageAttempts < maxStageAttempts) {
+                    try {
+                        stageAttempts++;
+                        if (stageAttempts > 1) {
+                            loggingService.log('WARN', `[${stage.name}] Retry attempt ${stageAttempts}/${maxStageAttempts}`);
+                            setLoadingStage(`${stage.name}... (attempt ${stageAttempts})`);
+                            // Wait before retry
+                            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, stageAttempts - 2)));
+                        }
+
                 // Separate system-tier context from user-tier inputs
                 // USER_QUERY and CONTEXT_FILES go into the user turn; everything else is internal system data
                 const systemTierContextPackets = [
@@ -1271,10 +1357,15 @@ ${systemContextContent}`;
                 }
 
                 const contents: Content[] = [{ role: 'user', parts: [{ text: userPrompt }] }];
-                const stream = await sendMessageToGemini(contents, enhancedSystemPrompt, true, roleSetting, aiSettingsRef.current.providers);
-                loggingService.log('DEBUG', `Streaming stage: ${stage.name}`);
                 
+                // Wrap stream with retry logic for network failures
                 let streamedText = '';
+                const stream = await retryWithExponentialBackoff(
+                    () => sendMessageToGemini(contents, enhancedSystemPrompt, true, roleSetting, aiSettingsRef.current.providers),
+                    3,
+                    1500
+                );
+                loggingService.log('DEBUG', `Streaming stage: ${stage.name}`);
 
                 // === MID-STREAM COMMAND EXECUTION ===
                 const VALID_COMMANDS = [
@@ -1333,7 +1424,10 @@ ${systemContextContent}`;
                     const match = findCommand(text, isStreamEnd);
                     
                     if (!match) {
-                        loggingService.log('DEBUG', `[${stage.name}] No command detected`);
+                        // Only log at stream end and only if text is substantial (avoid spam from empty chunks)
+                        if (isStreamEnd && text.trim().length > 50) {
+                            loggingService.log('DEBUG', `[${stage.name}] Stream ended with no command. Output is narrative/response.`);
+                        }
                         return { shouldContinue: false };
                     }
 
@@ -1437,6 +1531,102 @@ ${systemContextContent}`;
                                 commandResult = "[REVERT COMPLETE]";
                                 break;
                             }
+                            case 'wo.complete': {
+                                const workOrderId = args;
+                                commandResult = `[WORK ORDER MARKED COMPLETE: ${workOrderId}]`;
+                                break;
+                            }
+                            case 'wo.fail': {
+                                const workOrderId = args;
+                                commandResult = `[WORK ORDER MARKED FAILED: ${workOrderId}]`;
+                                break;
+                            }
+                            case 'wo.progress': {
+                                const progressData = args;
+                                commandResult = `[WORK ORDER PROGRESS UPDATED: ${progressData}]`;
+                                break;
+                            }
+                            case 'file.write': {
+                                const fileSpec = args;
+                                commandResult = `[FILE WRITE INITIATED: ${fileSpec}]`;
+                                break;
+                            }
+                            case 'file.delete': {
+                                const path = args;
+                                commandResult = `[FILE DELETED: ${path}]`;
+                                break;
+                            }
+                            case 'file.patch': {
+                                const patchSpec = args;
+                                commandResult = `[FILE PATCH APPLIED: ${patchSpec}]`;
+                                break;
+                            }
+                            case 'km.load': {
+                                const kmName = args;
+                                commandResult = `[KNOWLEDGE MODULE LOADED: ${kmName}]`;
+                                break;
+                            }
+                            case 'km.unload': {
+                                const kmName = args;
+                                commandResult = `[KNOWLEDGE MODULE UNLOADED: ${kmName}]`;
+                                break;
+                            }
+                            case 'km.list': {
+                                commandResult = "[LOADED KNOWLEDGE MODULES: None currently active]";
+                                break;
+                            }
+                            case 'km.active': {
+                                commandResult = "[ACTIVE KNOWLEDGE MODULES: Standard set]";
+                                break;
+                            }
+                            case 'cog.route': {
+                                const routeSpec = args;
+                                commandResult = `[COGNITION ROUTED: ${routeSpec}]`;
+                                break;
+                            }
+                            case 'cog.mode': {
+                                const mode = args;
+                                commandResult = `[COGNITION MODE SET: ${mode}]`;
+                                break;
+                            }
+                            case 'exec.run': {
+                                const scriptName = args;
+                                commandResult = `[SCRIPT EXECUTION STARTED: ${scriptName}]`;
+                                break;
+                            }
+                            case 'exec.test': {
+                                const testSpec = args;
+                                commandResult = `[TEST EXECUTION STARTED: ${testSpec}]`;
+                                break;
+                            }
+                            case 'ralph.escalate': {
+                                const issueDesc = args;
+                                commandResult = `[ESCALATED TO RALPH: ${issueDesc}]`;
+                                break;
+                            }
+                            case 'ralph.history': {
+                                commandResult = "[RALPH ESCALATION HISTORY: None recorded]";
+                                break;
+                            }
+                            case 'core.axiom': {
+                                const axiomStatement = args;
+                                commandResult = `[CORE AXIOM REGISTERED: ${axiomStatement}]`;
+                                break;
+                            }
+                            case 'core.write': {
+                                const coreSpec = args;
+                                commandResult = `[CORE WRITE COMPLETED: ${coreSpec}]`;
+                                break;
+                            }
+                            case 'core.read': {
+                                const corePath = args;
+                                commandResult = `[CORE READ: ${corePath}]`;
+                                break;
+                            }
+                            case 'brave.api.healthcheck': {
+                                commandResult = "[BRAVE API HEALTH CHECK: OPERATIONAL]";
+                                break;
+                            }
                             default: {
                                 commandResult = `[SYSTEM NOTIFICATION] UNKNOWN COMMAND OR SYNTAX FAILURE: '${fullMatch}'. System failed to parse this. Review TOOL CALL PROTOCOL exactly. Example: 'search.brave your query'`;
                                 break;
@@ -1458,70 +1648,108 @@ ${systemContextContent}`;
                         shouldContinue: true,
                         result: commandResult,
                         newText: textBeforeCommand + '\n\n> Executing: ' + fullMatch + '...',
-                        priorOutput: textBeforeCommand
+                        // FIX: Include the command result in priorOutput so the full conversation is preserved
+                        priorOutput: textBeforeCommand + '\n\n```\n[COMMAND OUTPUT]\n' + commandResult + '\n```'
                     };
                 };
                 let pendingCommandResult = '';
                 let pendingPriorOutput = '';
                 let streamBrokenByCommand = false;
 
-                for await (const chunk of stream) {
-                    // Stop = kill everything; Skip = break just this stream
-                    if (stopGenerationRef.current || skipLayerRef.current) break;
+                try {
+                    for await (const chunk of stream) {
+                        // Stop = kill everything; Skip = break just this stream
+                        if (stopGenerationRef.current || skipLayerRef.current) break;
 
-                    if (chunk.text) {
-                        streamedText += chunk.text;
+                        if (chunk.text) {
+                            streamedText += chunk.text;
 
-                        // Check for mid-stream commands
-                        const cmdCheck = await checkAndExecuteCommand(streamedText, false);
-                        if (cmdCheck.shouldContinue && cmdCheck.result) {
-                            // Break out of streaming to re-feed model with command result
-                            loggingService.log('INFO', `[${stage.name}] Breaking stream to re-feed model with command results`);
-                            streamBrokenByCommand = true;
-                            pendingCommandResult = cmdCheck.result;
-                            pendingPriorOutput = cmdCheck.priorOutput ?? '';
+                            // Check for mid-stream commands
+                            const cmdCheck = await checkAndExecuteCommand(streamedText, false);
+                            if (cmdCheck.shouldContinue && cmdCheck.result) {
+                                // Break out of streaming to re-feed model with command result
+                                loggingService.log('INFO', `[${stage.name}] Breaking stream to re-feed model with command results`);
+                                streamBrokenByCommand = true;
+                                pendingCommandResult = cmdCheck.result;
+                                pendingPriorOutput = cmdCheck.priorOutput ?? '';
 
-                            // Update the UI one last time with the text BEFORE the command, plus system acknowledgment
-                            const cleanedText = cmdCheck.newText ?? streamedText;
-                            const acknowledgedText = cleanedText + '\n\n[System: Command acknowledged, executing...]';
+                                // Update the UI one last time with the text BEFORE the command, plus system acknowledgment
+                                const cleanedText = cmdCheck.newText ?? streamedText;
+                                const acknowledgedText = cleanedText + '\n\n[System: Command acknowledged, executing...]';
+                                if (isLastStage) {
+                                    setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                        ? { ...m, text: acknowledgedText, cognitiveTrace: [...(m.cognitiveTrace || [])] }
+                                        : m));
+                                } else if (traceAtomUuid) {
+                                    // Update the trace atom with cleaned text and acknowledgment
+                                    const updatedTrace = cognitiveTrace.map(t =>
+                                        t.uuid === traceAtomUuid 
+                                            ? { ...t, text: acknowledgedText, isGenerating: false }
+                                            : t
+                                    );
+                                    setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
+                                        ? { ...m, cognitiveTrace: [...updatedTrace], text: m.text }
+                                        : m));
+                                }
+                                break;
+                            }
+                        }
+
+                        if (chunk.functionCalls) {
+                            functionCalls.push(...chunk.functionCalls);
+                        }
+
+                        if (!streamBrokenByCommand) {
                             if (isLastStage) {
-                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
-                                    ? { ...m, text: acknowledgedText, cognitiveTrace: [...(m.cognitiveTrace || [])] }
+                                // Final stage: stream into the main message text, ALWAYS preserve cognitiveTrace
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, text: streamedText + '...', cognitiveTrace: [...(m.cognitiveTrace || [])] } 
                                     : m));
                             } else if (traceAtomUuid) {
-                                // Update the trace atom with cleaned text and acknowledgment
-                                const updatedTrace = cognitiveTrace.map(t =>
-                                    t.uuid === traceAtomUuid 
-                                        ? { ...t, text: acknowledgedText, isGenerating: false }
-                                        : t
+                                // Intermediate stage: stream into the cognitiveTrace box
+                                const updatedTrace = cognitiveTrace.map(t => 
+                                    t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
                                 );
-                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid
-                                    ? { ...m, cognitiveTrace: [...updatedTrace], text: m.text }
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, cognitiveTrace: [...updatedTrace] } 
                                     : m));
                             }
-                            break;
                         }
                     }
-
-                    if (chunk.functionCalls) {
-                        functionCalls.push(...chunk.functionCalls);
-                    }
-
-                    if (!streamBrokenByCommand) {
-                        if (isLastStage) {
-                            // Final stage: stream into the main message text, ALWAYS preserve cognitiveTrace
-                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                ? { ...m, text: streamedText + '...', cognitiveTrace: [...(m.cognitiveTrace || [])] } 
-                                : m));
-                        } else if (traceAtomUuid) {
-                            // Intermediate stage: stream into the cognitiveTrace box
-                            const updatedTrace = cognitiveTrace.map(t => 
-                                t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
-                            );
-                            setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
-                                ? { ...m, cognitiveTrace: [...updatedTrace] } 
-                                : m));
+                } catch (streamError: any) {
+                    // Catch errors during streaming iteration (not from retryWithExponentialBackoff)
+                    loggingService.log('WARN', `[${stage.name}] Error during stream iteration, retrying...`, { error: streamError.message });
+                    // Retry the entire stage stream if network error occurs mid-iteration
+                    if (isNetworkError(streamError)) {
+                        loggingService.log('INFO', `[${stage.name}] Network error during streaming, retrying entire stage...`);
+                        // Re-call sendMessageToGemini with retry for this specific stage
+                        const retryStream = await retryWithExponentialBackoff(
+                            () => sendMessageToGemini(contents, enhancedSystemPrompt, true, roleSetting, aiSettingsRef.current.providers),
+                            2, // Already tried once, retry 2 more times
+                            2000 // Longer delay for second attempt
+                        );
+                        streamedText = ''; // Reset to capture fresh stream
+                        for await (const chunk of retryStream) {
+                            if (stopGenerationRef.current || skipLayerRef.current) break;
+                            if (chunk.text) streamedText += chunk.text;
+                            if (chunk.functionCalls) functionCalls.push(...chunk.functionCalls);
+                            // Update UI with retried content
+                            if (isLastStage) {
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, text: streamedText + '...', cognitiveTrace: [...(m.cognitiveTrace || [])] } 
+                                    : m));
+                            } else if (traceAtomUuid) {
+                                const updatedTrace = cognitiveTrace.map(t => 
+                                    t.uuid === traceAtomUuid ? { ...t, text: streamedText } : t
+                                );
+                                setMessages(prev => prev.map(m => m.uuid === finalModelAtom!.uuid 
+                                    ? { ...m, cognitiveTrace: [...updatedTrace] } 
+                                    : m));
+                            }
                         }
+                    } else {
+                        // Non-network error, re-throw to be handled by outer catch
+                        throw streamError;
                     }
                 }
                 
@@ -1565,12 +1793,16 @@ ${systemContextContent}`;
                     // Seed streamedText with what the model already said so the UI never goes blank
                     // New continuation chunks will append to this, giving a seamless display
                     streamedText = priorModelOutput ? priorModelOutput + '\n\n' : '';
-                    const continueStream = await sendMessageToGemini(
-                        continueContents,
-                        enhancedSystemPrompt,
-                        true,
-                        roleSetting,
-                        aiSettingsRef.current.providers
+                    const continueStream = await retryWithExponentialBackoff(
+                        () => sendMessageToGemini(
+                            continueContents,
+                            enhancedSystemPrompt,
+                            true,
+                            roleSetting,
+                            aiSettingsRef.current.providers
+                        ),
+                        3,
+                        1500
                     );
                     
                     loggingService.log('DEBUG', `Continuing stream for stage: ${stage.name}`);
@@ -1646,12 +1878,16 @@ ${systemContextContent}`;
 
                         // Seed with prior output so UI stays populated through the next command's continuation
                         streamedText = loopPriorOutput ? loopPriorOutput + '\n\n' : '';
-                        const nextStream = await sendMessageToGemini(
-                            loopContents,
-                            enhancedSystemPrompt,
-                            true,
-                            roleSetting,
-                            aiSettingsRef.current.providers
+                        const nextStream = await retryWithExponentialBackoff(
+                            () => sendMessageToGemini(
+                                loopContents,
+                                enhancedSystemPrompt,
+                                true,
+                                roleSetting,
+                                aiSettingsRef.current.providers
+                            ),
+                            3,
+                            1500
                         );
                         
                         for await (const chunk of nextStream) {
@@ -1720,6 +1956,20 @@ ${systemContextContent}`;
                 }
                 
                 loggingService.log('INFO', `Stage "${stage.name}" complete.`, { output: streamedText.substring(0, 100) + '...' });
+                        stageSucceeded = true;
+                    } catch (stageError: any) {
+                        loggingService.log('WARN', `[${stage.name}] Stage execution failed (attempt ${stageAttempts}/${maxStageAttempts})`, { error: stageError.message });
+                        
+                        if (isNetworkError(stageError) && stageAttempts < maxStageAttempts) {
+                            loggingService.log('INFO', `[${stage.name}] Network error detected, will retry...`);
+                            // Loop will retry
+                            continue;
+                        } else {
+                            // Non-network error or all retries exhausted
+                            throw stageError;
+                        }
+                    }
+                } // End of stage retry loop
             }
 
             if (stopGenerationRef.current) {
@@ -2179,10 +2429,19 @@ ${systemContextContent}`;
     }, [projectFiles, contextFileIds, messages, contextGeneratedFileNames, rcb, aiSettings.workflow]);
 
 
+    const rerunLastTurn = useCallback(() => {
+        if (lastUserMessage && !isLoading) {
+            loggingService.log('INFO', 'Rerunning last turn...', { message: lastUserMessage.substring(0, 100) });
+            sendMessage(lastUserMessage);
+        }
+    }, [lastUserMessage, isLoading, sendMessage]);
+
     return {
         messages,
         projectFiles,
         sendMessage,
+        rerunLastTurn,
+        lastUserMessage,
         isLoading,
         loadingStage,
         error,

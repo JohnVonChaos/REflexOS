@@ -29,7 +29,7 @@ class SearchQuery(BaseModel):
 
 
 # Replace with your Brave Search API key
-BRAVE_API_KEY = "BSArFXrDChW-vitat8QfjrWYKLQ_xxe"
+BRAVE_API_KEY = "BRAVEAPIKEYHERE"
 
 
 # --- Helper Functions ---

@@ -362,7 +362,7 @@ export const performWebSearch = async (query: string, roleSetting: RoleSetting, 
 
             if (!braveApiKey) {
                 loggingService.log('ERROR', 'Brave API key not configured in settings');
-                throw new Error('Brave API key is not configured. Please set it in the Background Cognition modal.');
+                throw new Error('Brave API key is not configured. Please set it in Workflow Designer → Web Search Configuration.');
             }
 
             // Route through the local browserServer proxy — browser JS cannot call
